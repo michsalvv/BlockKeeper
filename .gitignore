@@ -1,0 +1,21 @@
+# Output files
+*.ko
+*.o
+*.mod.c
+*.mod.o
+*.symvers
+*.order
+Module.markers
+modules.order
+Module.symvers
+
+# Generated files
+/build/
+
+# Editor files
+*~
+*.swp
+.vscode/
+
+# Build directories
+/out/
