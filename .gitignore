@@ -6,6 +6,8 @@
 *.mod.o
 *.symvers
 *.order
+*.mod
+*.cmd
 Module.markers
 modules.order
 Module.symvers
