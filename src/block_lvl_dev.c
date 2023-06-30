@@ -11,7 +11,7 @@
 
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("Michele Salvatori");
-MODULE_DESCRIPTION("Block-Level Data Management Service");
+MODULE_DESCRIPTION("BlockKeeper: Block-Level Data Management Service");
 
 
 unsigned long the_syscall_table = 0x0;
@@ -21,7 +21,10 @@ LIST_HEAD(rcu_list);
 struct super_block *superblock;
 
 session_info session = {
-            .mounted = 0
+            .mounted = 0,
+#ifdef WB_DAEMON    
+            .wb_synch = 1
+#endif
         };
 
 static struct super_operations fs_super_ops = {
@@ -31,7 +34,7 @@ static struct dentry_operations fs_dentry_ops = {
 };
 
 
-int singlefilefs_fill_super(struct super_block *sb, void *data, int silent) {   
+int bkeeper_fill_super(struct super_block *sb, void *data, int silent) {   
 
     struct inode *root_inode;
     struct buffer_head *bh;
@@ -158,7 +161,6 @@ int singlefilefs_fill_super(struct super_block *sb, void *data, int silent) {
         brelse(bh);
 
         if (temp_md->valid == VALID_BIT){
-            printk("%s: Block %d is VALID\n", MOD_NAME, ii-2);
             fs_md->invalid_blocks[ii-2] = VALID_BIT;
             rcu_i = kzalloc(sizeof(rcu_item), GFP_KERNEL);   //TODO KERNEL o GFP_ATOMIC? Guarda appunti
             if (!rcu_i){
@@ -184,35 +186,36 @@ int singlefilefs_fill_super(struct super_block *sb, void *data, int silent) {
     return 0;
 }
 
-static void sf_blk_fs_kill_superblock(struct super_block *s) {
+static void bkeeper_kill_superblock(struct super_block *s) {
     kill_block_super(s);
 
-    if (!__sync_bool_compare_and_swap(&(session.mounted), 1, 0)) { 
+    if (!session.mounted) { 
         printk("%s: umount procedure fail\n", MOD_NAME);
         return;
     }
+    session.mounted = 0;
     printk("%s: umount session %d\n", MOD_NAME, session.mounted);
 
-    printk(KERN_INFO "%s: %s unmount succesful.\n",MOD_NAME, FS_NAME);
+    printk("%s: %s unmount succesful.\n",MOD_NAME, FS_NAME);
     return;
 }
 
-struct dentry *sf_blk_fs_mount(struct file_system_type *fs_type, int flags, const char *dev_name, void *data) {
+struct dentry *bkeeper_mount(struct file_system_type *fs_type, int flags, const char *dev_name, void *data) {
 
     struct dentry *ret;
 
-    if (!__sync_bool_compare_and_swap(&(session.mounted), 0, 1 )){
+    if (session.mounted){
         printk("%s: %s already mounted. Can be mounted only once\n", MOD_NAME, FS_NAME);
         return ERR_PTR(-EEXIST);    
     }
-
+    session.mounted = 1;
     printk("%s: mount session %d\n", MOD_NAME, session.mounted);
 
 
-    ret = mount_bdev(fs_type, flags, dev_name, data, singlefilefs_fill_super);
+    ret = mount_bdev(fs_type, flags, dev_name, data, bkeeper_fill_super);
     if (unlikely(IS_ERR(ret))){
-        printk("%s: error mounting %s",MOD_NAME, FS_NAME);
-        __sync_bool_compare_and_swap(&(session.mounted), 1, 0 );
+        printk("%s: [ABORT] error mounting %s",MOD_NAME, FS_NAME);
+        session.mounted = 0;
     }
     else
         printk("%s: %s is succesfully mounted on from device %s\n",MOD_NAME, FS_NAME, dev_name);
@@ -222,11 +225,11 @@ struct dentry *sf_blk_fs_mount(struct file_system_type *fs_type, int flags, cons
 
 
 //file system structure
-static struct file_system_type onefilefs_type = {
+static struct file_system_type bkeeper_fs = {
 	.owner = THIS_MODULE,
         .name           = FS_NAME,
-        .mount          = sf_blk_fs_mount,
-        .kill_sb        = sf_blk_fs_kill_superblock,
+        .mount          = bkeeper_mount,
+        .kill_sb        = bkeeper_kill_superblock,
 };
 
 
@@ -236,7 +239,7 @@ int init_module(void) {
     int ret;
 	AUDIT printk("%s: Received sys_call_table address %px\n",MOD_NAME,(void*)the_syscall_table);
 
-    ret = register_filesystem(&onefilefs_type);
+    ret = register_filesystem(&bkeeper_fs);
 
     if (likely(ret == 0)){
         printk("%s: sucessfully registered file system driver\n",MOD_NAME);
@@ -254,7 +257,7 @@ void cleanup_module(void) {
     printk("%s: shutting down\n",MOD_NAME);
 
     //unregister filesystem
-    ret = unregister_filesystem(&onefilefs_type);
+    ret = unregister_filesystem(&bkeeper_fs);
 
     uninstall_syscalls((void*)the_syscall_table);
 

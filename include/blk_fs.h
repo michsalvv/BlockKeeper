@@ -7,6 +7,7 @@
 typedef struct{
     unsigned int mounted;
     struct mutex mutex_w; 
+	unsigned int wb_synch;
 }session_info;
 
 extern struct super_block *superblock;  		// Global device superblock

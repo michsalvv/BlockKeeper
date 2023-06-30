@@ -86,6 +86,8 @@ asmlinkage int sys_invalidate_data(int offset)
     // WRITE_UNLOCK;
     mutex_unlock(&session.mutex_w);
 
+    if(session.wb_synch) sync_dirty_buffer(bh);
+    
     // Grace Period
     synchronize_rcu();
     // Free reference

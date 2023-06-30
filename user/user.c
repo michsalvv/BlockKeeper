@@ -21,7 +21,7 @@ int main(int argc, char **argv){
     //     return 0;
     // }
 
-    ret = syscall(INVALIDATE, 5);
+    ret = syscall(INVALIDATE, 1);
     printf("[MAIN] Returned %d\n", ret);
 
     // // while(1){
