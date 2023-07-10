@@ -52,19 +52,32 @@ void action3() {
 void vfs_read(){
     int size, ret;
     char buffer[4096];
+    
     int fd = open("mount/the-file", O_RDONLY);
-    if (fd <0){
-        printf("File opening error\n");
+    if (fd == -1) {
+        printf("Error occurred while opening file");
         return;
     }
 
-    printf("Bytes to read: ");
-    scanf("%d", &size);
+    do {
+        
+        printf("Bytes to read [ 0 to exit ]: ");
+        scanf("%d", &size);
+        if (size == 0){
+            break;
+        }
+            
+        ret = read(fd, buffer, size);
 
-    ret = read(fd, buffer, size);
+            
+        printf("Readed bytes: %d\n", ret);
+        printf("Returned buffer>\n%.*s\n", ret, buffer);
 
-    printf("Readed bytes: %d\n", ret);
-    printf("> %.*s", ret, buffer);
+    } while (1);
+    close(fd);
+
+    return;
+
 }
 
 int main() {

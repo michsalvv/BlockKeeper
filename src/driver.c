@@ -250,7 +250,7 @@ ssize_t dev_read (struct file * filp, char __user * buf, size_t len, loff_t * of
     struct inode * the_inode = filp->f_inode;
     uint64_t file_size = the_inode->i_size ;
 
-    int ret, starting_blk, used_len = 0;
+    int ret, blk_to_skip, readed_blk, used_len = 0;
     loff_t offset;
     char *temp_buf;
     
@@ -263,13 +263,14 @@ ssize_t dev_read (struct file * filp, char __user * buf, size_t len, loff_t * of
     else if (*off + len > file_size)
         len = file_size - *off;         
 
-    // Skip superblock and file-inode
-    // starting_blk = (*off / DEFAULT_BLOCK_SIZE) + 2; //not exploited
+    // Skip superblock and file-inode. Block's id start from 1
+    blk_to_skip = (*off / DEFAULT_BLOCK_SIZE);
 
     // Offset inside block
     // offset = *off % DEFAULT_BLOCK_SIZE;  // not exploited
 
-    AUDIT printk("%s: [READ] len: %ld | off %lld | file_size %lld\n",MOD_NAME, len, *off, the_inode->i_size);
+    AUDIT printk("%s: [READ] (len = %ld) | (off = %lld)\n",MOD_NAME, len, *off);
+    AUDIT printk("%s: [READ] Blocks to skip %d\n",MOD_NAME, blk_to_skip);
 
     temp_buf = (char*) kzalloc(len, GFP_KERNEL);
     if (!temp_buf){
@@ -284,20 +285,29 @@ ssize_t dev_read (struct file * filp, char __user * buf, size_t len, loff_t * of
      * 
     */
     rcu_read_lock();
+    struct list_head *head = &(metadata->rcu_list);
+
     list_for_each_entry_rcu(rcu_i, &(metadata->rcu_list), node){
         int readable_b;
 
+        // if (blk_to_skip-- >0){
+        //     continue;
+        // }
+        //TODO Salvare l'ultimo order letto. Alla prossima invocazione leggere a partire da blocchi con order maggiori.
+        //TODO Oppure mi salvo il blocco da finire da leggere, se alla next invocazione c'è ancora, allora leggo il restante, altrimenti leggo a partire dal nuovo blocco
+
         if (used_len == len){
-            AUDIT printk("%s: used_len == len", MOD_NAME);
+            AUDIT printk("%s: used_len == len\n", MOD_NAME);
             rcu_read_unlock();
             break;
         }
-        // data_len non è indispensabile ma è utile in quasto caso per evitare di leggere il blocco solamente per capire se può essere letto all'utente
-        if (rcu_i->data_len < (len-used_len)){
-            AUDIT printk("%s: data_len < len-used_len", MOD_NAME);
+        // data_len non è indispensabile ma è utile in quasto caso per evitare di leggere il blocco solamente per capire se può essere consegnato all'utente
+        if (rcu_i->data_len <= (len-used_len)){
+            AUDIT printk("%s: [READ] data_len <= len-used_len\n", MOD_NAME);
             readable_b = rcu_i->data_len;
+            readed_blk++;
         }else{
-            AUDIT printk("%s: data_len >= len-used_len", MOD_NAME);
+            AUDIT printk("%s: [READ] data_len > len-used_len\n", MOD_NAME);
             readable_b = len - used_len;
         }
 
@@ -309,20 +319,35 @@ ssize_t dev_read (struct file * filp, char __user * buf, size_t len, loff_t * of
         }
         printk("%s: [READ] rcu_id: %d, data_len %ld, used_len %d, readable %d\n",MOD_NAME, rcu_i->id, rcu_i->data_len, used_len, readable_b);
 
-        // TODO cambia con strcat
         // Skip block metadata
         strncpy(temp_buf + used_len, bh->b_data + sizeof(blk_metadata), readable_b);
         used_len += readable_b;
         brelse(bh);
-    }  
+    }
+
+    /**
+     * Questo controllo è necessario per permettere il corretto funzionamento del comando `cat`, il quale invoca successive chiamate a `dev_read()`
+     * finchè l'offset non ha raggiunto la fine del file. 
+     * Controlliamo se l'iterazione è tornata a puntare alla testa: In quel caso non ci saranno più blocchi validi da poter leggere.
+     * Di conseguenza, l'output per il comando `cat` è pronto, dobbiamo quindi spostare l'offset fino alla fine del file,
+     * in questo modo non ci sarà una successiva invocazione della dev_read(). 
+     * Possiamo farlo perchè siamo sicuri di aver letto tutti i possibili blocchi validi durante la critical section RCU. 
+     * 
+     * Nel caso in cui invece la len desiderata venga soddisfatta prima di poter leggere tutti i blocchi validi (ad esempio se invochiamo la dev_read tramite `read()`),
+     * andiamo a spostare l'offset a seconda del numero di byte letti dal device. In questo modo una successiva invocazione di una read sullo stesso file descriptor
+     * potrà ripartire dall'offset appena determinato. 
+    */
+    if (&rcu_i->node == head){
+        AUDIT printk("%s: No more block to read\n", MOD_NAME);
+        *off = file_size;
+    }else{
+        if (readed_blk>0)
+            *off += readed_blk * DEFAULT_BLOCK_SIZE;
+        else *off += used_len;
+    }
 
     rcu_read_unlock();            
 
-    /**
-     * Dobbiamo spostare l'offset fino alla fine del file, in questo modo non ci sarà una successiva invocazione della dev_read(). 
-     * Possiamo farlo perchè siamo sicuri di aver letto tutti i possibili blocchi validi.
-    */
-    *off = file_size;
 
     if (used_len == 0){
         kfree(temp_buf);
@@ -337,13 +362,13 @@ ssize_t dev_read (struct file * filp, char __user * buf, size_t len, loff_t * of
 
 //TODO Se viene aperto per scrivere, chiudi. Non credo servano controlli sul mounted, non posso aprire un file se non è montato il suo FS, nemmeno lo vedo penso
 int dev_open (struct inode * inode, struct file * filp){
-    printk(KERN_INFO "%s: open operation called\n", MOD_NAME);
+    AUDIT printk(KERN_INFO "%s: open operation called\n", MOD_NAME);
     return 0;
 }
 
 //Non credo servano controlli
 int dev_release (struct inode * inode, struct file *filp){
-    printk(KERN_INFO "%s: release operation called\n", MOD_NAME);
+    AUDIT printk(KERN_INFO "%s: release operation called\n", MOD_NAME);
     return 0;
 }
 
