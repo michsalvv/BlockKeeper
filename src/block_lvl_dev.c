@@ -27,13 +27,10 @@ session_info session = {
 #endif
         };
 
-static struct super_operations fs_super_ops = {
-};
+static struct super_operations fs_super_ops = {};
+static struct dentry_operations fs_dentry_ops = {};
 
-static struct dentry_operations fs_dentry_ops = {
-};
-
-
+//TODO Liberare risorse se occorre un errore?
 int bkeeper_fill_super(struct super_block *sb, void *data, int silent) {   
 
     struct inode *root_inode;
@@ -43,7 +40,7 @@ int bkeeper_fill_super(struct super_block *sb, void *data, int silent) {
     struct fs_metadata *fs_md;
     uint64_t magic;
 
-    size_t ii, init_blks;   // Inizialized blocks
+    size_t ii, init_blks;   
     struct fs_inode* unique_inode;
     rcu_item *rcu_i;
     
@@ -61,35 +58,22 @@ int bkeeper_fill_super(struct super_block *sb, void *data, int silent) {
     brelse(bh);
 
     if(magic != sb->s_magic){
-        printk("%s: Error! magic %lld s_magic %ld", MOD_NAME, magic, sb->s_magic);
+        printk("%s: Error! Magic number differs: %lld != %ld", MOD_NAME, magic, sb->s_magic);
 	    return -EBADF;
     }
 
 
-    // Nel superblocco del device abbiamo inserito esattamente NUM_BLOCKS. Forse questo controllo è inutile. 
-    // TODO Forse bisogna aggiungere un ulteriore controllo tra il numero di blocchi inserito nel superblocco e il numero di blocchi effettivo che è stato allocato, ovvero the_inode->filesize / 4096
-    // if (sb_disk->total_blocks != NUM_BLOCKS ){
-    //     printk("%s: Device has [%lld] blocks. The driver can handle [%d] blocks\n", MOD_NAME, sb_disk->total_blocks, NUM_BLOCKS);
-    //     return -EINVAL;
-    // }
+    /* Check over manageable block size */
+    if (sb_disk->block_size != DEFAULT_BLOCK_SIZE){
+        printk("%s: [FAILED] The driver can handle block of size %d but the device has a default block size of %d\n", MOD_NAME, DEFAULT_BLOCK_SIZE, sb_disk->block_size);
+        return -EIO;
+    } 
 
-    //Controlla se il numero di blocchi del device è maggiore del numero di blocchi gestibile dal fs
-     /*    if (the_file_inode->file_size > NBLOCKS * DEFAULT_BLOCK_SIZE){
-        // unamangeable block: too big
-        printk("%s: mounting error - the device has %llu blocks, while NBLOCKS is %d\n", MOD_NAME, the_file_inode->file_size / DEFAULT_BLOCK_SIZE, NBLOCKS);
-        return -E2BIG;
-    } */
-
-    /**
-     * Manteniamo nelle info del superblocco un riferimento alla RCU list e l'array di free nodes
-    */
+    /* Manteniamo nelle info del superblocco un riferimento alla RCU list e l'array di free nodes  */
     fs_md = (struct fs_metadata*) kzalloc(sizeof(struct fs_metadata), GFP_ATOMIC);
     sb->s_fs_info = (void*) fs_md; 
     sb->s_op = &fs_super_ops;
 
-    /**
-     * iget_locked(super_block, ino) : obtain an inode from a mounted file system
-    */
     root_inode = iget_locked(sb, 0);
     if (!root_inode){
         return -ENOMEM;
@@ -123,7 +107,6 @@ int bkeeper_fill_super(struct super_block *sb, void *data, int silent) {
         return -ENOMEM;
     
     sb->s_root->d_op = &fs_dentry_ops;
-
     
     unlock_new_inode(root_inode);   //unlock the inode to make it usable
 
@@ -135,19 +118,25 @@ int bkeeper_fill_super(struct super_block *sb, void *data, int silent) {
     unique_inode = (struct fs_inode*) bh->b_data;
     brelse(bh);
 
-    superblock = sb;    // Reference to global superblock
+    /* Reference to global superblock */
+    superblock = sb; 
 
-    INIT_LIST_HEAD_RCU(&(fs_md->rcu_list));
 
     init_blks = unique_inode->file_size / DEFAULT_BLOCK_SIZE;
-    printk("%s: init blocks: %d\n", MOD_NAME, init_blks);
-    printk("%s: NUM_BLOCKS: %d\n", MOD_NAME, NUM_BLOCKS);
 
-    //TODO Metti il controllo qua
+    /* Check over the actual number of blocks that has been allocated and the number of blocks that the driver can handle */
+    if (init_blks > NUM_BLOCKS ){
+        printk("%s: [FAILED] Device has [%lld] blocks. The driver can handle max [%d] blocks\n", MOD_NAME, init_blks, NUM_BLOCKS);
+        return -EINVAL;
+    }
 
 
-    // Initialize blocks state array
+    /* Initialize block state array and RCU list for valid blocks */
     memset(fs_md->invalid_blocks, 0, sizeof(fs_md->invalid_blocks));
+    INIT_LIST_HEAD_RCU(&(fs_md->rcu_list));
+
+    /* Initialize writers mutexes */ 
+    mutex_init(&session.mutex_w);
 
     // Iteriamo da due perchè non teniamo nella RCU il superblocco e l'inode (almeno per ora)
     for (ii=2; ii<init_blks; ii++){
@@ -167,22 +156,18 @@ int bkeeper_fill_super(struct super_block *sb, void *data, int silent) {
                 return -ENOMEM;
             }
 
-            rcu_i->id = ii-2;   // Block ID starting from 0
+            rcu_i->id = ii-2;                               // Block ID starting from 0
             rcu_i->valid = VALID_BIT;
             rcu_i->data_len = temp_md->data_len;
-            rcu_i->timestamp = 0;
+            rcu_i->timestamp = 0; //TODO read timestamp from device, if NULL -> 0
             
-            // No need of synch. The FS cannot be mounted twice. //TODO Inserire controllo sul mounted quasi ovunque
+            // No need of writing synch. The FS cannot be mounted twice.
             list_add_tail_rcu(&(rcu_i->node), &(fs_md->rcu_list));
             continue;
         }
 
         fs_md->invalid_blocks[ii-2] = INVALID_BIT;
     }
-
-    // Initialize mutex 
-    mutex_init(&session.mutex_w);
-
     return 0;
 }
 
@@ -194,9 +179,8 @@ static void bkeeper_kill_superblock(struct super_block *s) {
         return;
     }
     session.mounted = 0;
-    printk("%s: umount session %d\n", MOD_NAME, session.mounted);
-
-    printk("%s: %s unmount succesful.\n",MOD_NAME, FS_NAME);
+    //TODO Free resources
+    printk("%s: %s unmount successful.\n",MOD_NAME, FS_NAME);
     return;
 }
 
@@ -209,12 +193,10 @@ struct dentry *bkeeper_mount(struct file_system_type *fs_type, int flags, const 
         return ERR_PTR(-EEXIST);    
     }
     session.mounted = 1;
-    printk("%s: mount session %d\n", MOD_NAME, session.mounted);
-
 
     ret = mount_bdev(fs_type, flags, dev_name, data, bkeeper_fill_super);
     if (unlikely(IS_ERR(ret))){
-        printk("%s: [ABORT] error mounting %s",MOD_NAME, FS_NAME);
+        printk("%s: [FAILED] error mounting %s",MOD_NAME, FS_NAME);
         session.mounted = 0;
     }
     else
@@ -226,7 +208,7 @@ struct dentry *bkeeper_mount(struct file_system_type *fs_type, int flags, const 
 
 //file system structure
 static struct file_system_type bkeeper_fs = {
-	.owner = THIS_MODULE,
+	    .owner = THIS_MODULE,
         .name           = FS_NAME,
         .mount          = bkeeper_mount,
         .kill_sb        = bkeeper_kill_superblock,

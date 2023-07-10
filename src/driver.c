@@ -115,6 +115,7 @@ asmlinkage int sys_put_data(char *source, size_t size)
 
 /**
  * int get_data(int offset, char * destination, size_t size)
+ * 
  * Used to read up to size bytes from the block at a given offset, if it currently keeps data; 
  * this system call should return the amount of bytes actually loaded into the destination area 
  * or zero if no data is currently kept by the device block;
@@ -128,7 +129,7 @@ asmlinkage int sys_get_data(int offset, char* destination, size_t size)
 #endif
 {
     struct super_block *sb = superblock;
-    struct fs_metadata *metadata = (struct fs_metadata *) sb->s_fs_info;    // Va bene qui perchè è un puntatore, non è una copia!!!
+    struct fs_metadata *metadata = (struct fs_metadata *) sb->s_fs_info;
     rcu_item *rcu_i;
     struct buffer_head *bh;
     size_t to_read, not_readed;
@@ -138,18 +139,17 @@ asmlinkage int sys_get_data(int offset, char* destination, size_t size)
     }
 
     if (!sb){
-        printk("%s: sys_get_data error retrieving superblock\n", MOD_NAME);
+        printk("%s: [GET] Error occured while retrieving superblock\n", MOD_NAME);
+        return -EINVAL;
+    }
+
+    if (offset > NUM_BLOCKS){
+        printk("%s: [GET] A block was requested whose id [%d] is outside the manageable block limit.\n", MOD_NAME, offset);
         return -EINVAL;
     }
 
     AUDIT printk("%s: [GET] on block %d\n", MOD_NAME, offset);
 
-
-    /**
-     * Si potrebbe fare che leggi dall'array di stato dei nodi, se è invalido ritorni.
-     * Il problema è che l'array non è RCU. 
-     * Forse non è un problema lo capiremo più avanti.
-    */
     rcu_read_lock();
     // AUDIT printk("%s: [GET] get lock. sleep started\n", MOD_NAME);
     // AUDIT printk("%s: [GET] Sleep finished\n", MOD_NAME);
@@ -237,10 +237,6 @@ int uninstall_syscalls(void *the_syscall_table){
  * File Operations
 */
 
-// TODO Se vengono richiesti 100bytes tramite una read(), ma ne vengono letti di meno, ritorna sempre 100. Bisogna fixarlo? 
-// Si perchè altrimenti l'utente potrebbe utilizzare il numero di bytes restituito per allocare memoria, che però sarebbe a quel punto 
-// Eccessiva rispetto all'effettivo contenuto ritornato. In pratica il numero di byte restituito non è coerente con il buffer ritornato ritornato
-
 /**
  *  This operation is not synchronized, *off can be changed concurrently.
  *  Add synchronization if you need it for any reason
@@ -254,11 +250,11 @@ ssize_t dev_read (struct file * filp, char __user * buf, size_t len, loff_t * of
     struct inode * the_inode = filp->f_inode;
     uint64_t file_size = the_inode->i_size ;
 
-    int ret, starting_blk, consumed_len = 0;
+    int ret, starting_blk, used_len = 0;
     loff_t offset;
     char *temp_buf;
     
-    struct super_block *sb = filp->f_path.dentry->d_inode->i_sb;        // TODO Va bene utilizzare anche il superblocco globale
+    struct super_block *sb = filp->f_path.dentry->d_inode->i_sb;        // Va bene utilizzare anche il superblocco globale
     struct fs_metadata *metadata = (struct fs_metadata *) sb->s_fs_info;
     rcu_item *rcu_i;
 
@@ -268,13 +264,12 @@ ssize_t dev_read (struct file * filp, char __user * buf, size_t len, loff_t * of
         len = file_size - *off;         
 
     // Skip superblock and file-inode
-    starting_blk = (*off / DEFAULT_BLOCK_SIZE) + 2; //TODO not exploited
+    // starting_blk = (*off / DEFAULT_BLOCK_SIZE) + 2; //not exploited
 
     // Offset inside block
-    offset = *off % DEFAULT_BLOCK_SIZE;  //TODO not exploited
+    // offset = *off % DEFAULT_BLOCK_SIZE;  // not exploited
 
-    printk("%s: [READ] len: %ld | off %lld | file_size %lld\n",MOD_NAME, len, *off, the_inode->i_size);
-    printk("%s: [READ] offset %lld of block %d\n",MOD_NAME, len, offset, starting_blk);
+    AUDIT printk("%s: [READ] len: %ld | off %lld | file_size %lld\n",MOD_NAME, len, *off, the_inode->i_size);
 
     temp_buf = (char*) kzalloc(len, GFP_KERNEL);
     if (!temp_buf){
@@ -284,29 +279,40 @@ ssize_t dev_read (struct file * filp, char __user * buf, size_t len, loff_t * of
     /**
      * Non serve nessuna condizione sul timestamp perchè la RCU è già in ordine
      * Inoltre, dato che vengono letti tutti i possibili blocchi validi durante la Critical Section in lettura, 
-     * Nessun blocco può essere invalidato nel frattempo!
+     * Nessun blocco può essere invalidato nel frattempo! 
+     * Ovvero non ci saranno invocazioni successive di dev_read solamente per consumare la len richiesta, viene letto l'intero file in una singola chimata
      * 
     */
     rcu_read_lock();
     list_for_each_entry_rcu(rcu_i, &(metadata->rcu_list), node){
-        
+        int readable_b;
+
+        if (used_len == len){
+            AUDIT printk("%s: used_len == len", MOD_NAME);
+            rcu_read_unlock();
+            break;
+        }
+        // data_len non è indispensabile ma è utile in quasto caso per evitare di leggere il blocco solamente per capire se può essere letto all'utente
+        if (rcu_i->data_len < (len-used_len)){
+            AUDIT printk("%s: data_len < len-used_len", MOD_NAME);
+            readable_b = rcu_i->data_len;
+        }else{
+            AUDIT printk("%s: data_len >= len-used_len", MOD_NAME);
+            readable_b = len - used_len;
+        }
+
         // Read target block
         bh = (struct buffer_head *)sb_bread(filp->f_path.dentry->d_inode->i_sb, rcu_i->id + 2);
         if(!bh){
             rcu_read_unlock();
             return -EIO;
         }
-
-        if (rcu_i->data_len + consumed_len > len){
-            // If we read also this block, it will exceed the amount of bytes asked from the reader
-            break;
-            brelse(bh);
-        }
+        printk("%s: [READ] rcu_id: %d, data_len %ld, used_len %d, readable %d\n",MOD_NAME, rcu_i->id, rcu_i->data_len, used_len, readable_b);
 
         // TODO cambia con strcat
         // Skip block metadata
-        strncpy(temp_buf + consumed_len, bh->b_data + sizeof(blk_metadata), rcu_i->data_len);  // TODO forse data_len dalla rcu la posso togliere ma in realtà così è comoda
-        consumed_len += rcu_i->data_len;
+        strncpy(temp_buf + used_len, bh->b_data + sizeof(blk_metadata), readable_b);
+        used_len += readable_b;
         brelse(bh);
     }  
 
@@ -318,17 +324,14 @@ ssize_t dev_read (struct file * filp, char __user * buf, size_t len, loff_t * of
     */
     *off = file_size;
 
-    if (consumed_len == 0){
+    if (used_len == 0){
         kfree(temp_buf);
         return 0;
     }
 
-    ret = copy_to_user(buf,temp_buf, consumed_len);
+    ret = copy_to_user(buf,temp_buf, used_len);
     kfree(temp_buf);
-
-    printk("%s: [READ] consumed_len %d\n", MOD_NAME, consumed_len);
-    printk("%s: [READ] returning len[%lld] - ret[%d] =  %d\n", MOD_NAME, len, ret, (len-ret));
-    return len - ret;
+    return used_len;
 }
 
 
