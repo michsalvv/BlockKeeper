@@ -10,6 +10,7 @@
 
 #include "common.h"
 
+
 /*
 	This makefs will write the following information onto the disk
 	- BLOCK 0, superblock;
@@ -18,6 +19,7 @@
 */
 int fd;
 int put_padding(int, int);
+void write_datablock(int fd, int block_number, char *body);
 
 int main(int argc, char *argv[])
 {
@@ -29,7 +31,7 @@ int main(int argc, char *argv[])
 	struct fs_inode file_inode;
 	struct fs_dir_record dir;
 	
-	char *file_body = "Testo del blocco: ";//this is the default content of the unique file 
+	char *file_body = "Testo del blocco ";//this is the default content of the unique file 
 	char body [50];
 
 	if (argc != 2) {
@@ -74,7 +76,7 @@ int main(int argc, char *argv[])
 	fflush(stdout);
 
 	ret = write(fd, (char *)&file_inode, sizeof(file_inode));
-	printf("Writed file node %lld bytes\n", ret);
+	printf("Writed file node %ld bytes\n", ret);
 	if (ret != sizeof(root_inode)) {
 		printf("The file inode was not written properly.\n");
 		close(fd);
@@ -102,51 +104,32 @@ int main(int argc, char *argv[])
 	blk_metadata md;
 
 	for (ii=0; ii< total_blocks - 2; ii++){
-		realIndex = ii +1;
-		if (realIndex==2 || realIndex == 6 || realIndex > 9){
-		// if (realIndex > 0){
-			sprintf(body, "%s %d\n", file_body, ii );
+
+		if (ii==1 || ii == 4 || ii >= 7){
+
+			sprintf(body, "%s %d\n", file_body, ii);
+			write_datablock(fd, ii, body);
+			put_padding(sizeof(struct blk_metadata) + strlen(body), ii);
+
+		}else{
 			// Write metadata
-			md.valid = VALID_BIT;
-			md.data_len = strlen(body);
-			md.order = ii;
+			md.valid = INVALID_BIT;
+			md.order = 0;
 			ret = write(fd, &md, sizeof(md));
 			if (ret != sizeof(md)){
 				printf("Metadata has not been written: [%ld] instead of [%ld]\n", ret, sizeof(md));
 				close(fd);
 				return -1;
 			}
-			// Write data
-			ret = write(fd, body, strlen(body));
-			if (ret != strlen(body)) {
-				printf("Writing file datablock n%d has failed. Written [%ld] bytes instead of [%ld]\n", ii, ret, strlen(body));
-				close(fd);
-				return -1;
-			}
-			printf("Datablock n[%d] has been written succesfully.\n",realIndex);
-			put_padding(sizeof(struct blk_metadata) + strlen(body), realIndex);
-			continue;
+
+			// write empty datablock
+			put_padding(sizeof(struct blk_metadata), ii);
+			printf("Datablock n%d has been written succesfully.\n",ii);
 		}
 		
-		// Write metadata
-		md.valid = INVALID_BIT;
-		md.order = 0;
-		ret = write(fd, &md, sizeof(md));
-			if (ret != sizeof(md)){
-				printf("Metadata has not been written: [%ld] instead of [%ld]\n", ret, sizeof(md));
-				close(fd);
-				return -1;
-			}
-
-		// write empty datablock
-		put_padding(sizeof(struct blk_metadata), realIndex);
-		printf("Datablock n%d has been written succesfully.\n",realIndex);
 	}
 
-
-
 	close(fd);
-
 	return 0;
 }
 
@@ -165,4 +148,27 @@ int put_padding (int written_bytes, int index_block){
 	}
 	printf("%d bytes of padding in the block n%d has been written sucessfully.\n", ret, index_block);
 	return 0;
+}
+
+void write_datablock(int fd, int block_number, char *body) {
+    blk_metadata md;
+	int ret; 
+
+    md.valid = VALID_BIT;
+    md.data_len = strlen(body);
+    md.order = block_number;
+
+    ret = write(fd, &md, sizeof(md));
+    if (ret != sizeof(md)) {
+        printf("Metadata has not been written: [%d] instead of [%ld]\n", ret, sizeof(md));
+        close(fd);
+        return;
+    }
+
+    ret = write(fd, body, strlen(body));
+    if (ret != strlen(body)) {
+        printf("Writing file datablock n%d has failed. Written [%d] bytes instead of [%ld]\n", block_number, ret, strlen(body));
+        close(fd);
+        return;
+    }
 }
