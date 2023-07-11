@@ -15,7 +15,7 @@
 #define GET 156
 #define INVALIDATE 174
 
-void action1() {
+void get_action() {
     int block, ret, size;
     char buffer[4096];
 
@@ -35,18 +35,21 @@ void action1() {
         printf("Returned: %d\n", errno);
 }
 
-void action2() {
+void inv_action() {
     printf("%sInvalidate block number: %s", GREEN, RESET);
-    int value;
-    scanf("%d", &value);
+    int block, ret;
+    scanf("%d", &block);
+
+    printf("Calling INVALIDATE syscall on block %d\n", block);
+    ret = syscall(INVALIDATE, block);
+    printf("Result: %d\n",ret);
 }
 
 void action3() {
     printf("%sAction 3 selected.%s\n", GREEN, RESET);
-    int value;
+    int block, ret;
     printf("Enter an integer value: ");
-    scanf("%d", &value);
-    printf("You entered: %d\n", value);
+
 }
 
 void vfs_read(){
@@ -68,10 +71,9 @@ void vfs_read(){
         }
             
         ret = read(fd, buffer, size);
-        if (ret >0){
-            
-        printf("Readed bytes: %d\n", ret);
-        printf("Returned buffer>\n%.*s\n", ret, buffer);
+        if (ret >=0){
+            printf("Readed bytes: %d\n", ret);
+            if (ret >0 ) printf("Returned buffer>\n%.*s\n", ret, buffer);
         }
 
     } while (1);
@@ -98,10 +100,10 @@ int main() {
 
         switch (choice) {
             case 1:
-                action1();
+                get_action();
                 break;
             case 2:
-                action2();
+                inv_action();
                 break;
             case 3:
                 action3();

@@ -140,9 +140,9 @@ int bkeeper_fill_super(struct super_block *sb, void *data, int silent) {
     mutex_init(&session.mutex_w);
 
     // Iteriamo da due perchè non teniamo nella RCU il superblocco e l'inode
-    for (ii=2; ii<init_blks; ii++){
+    for (ii=0; ii<init_blks-2; ii++){
         // Leggi i metadati dei blocchi e se è valido lo metti nella RCU
-        bh = sb_bread(sb, ii);
+        bh = sb_bread(sb, ii+2);
         if (!bh){
             return -EINVAL;
         }
@@ -152,13 +152,13 @@ int bkeeper_fill_super(struct super_block *sb, void *data, int silent) {
 
         if (temp_md->valid == VALID_BIT){
             printk("%s: block %ld is valid\n", MOD_NAME, ii);
-            fs_md->invalid_blocks[ii-2] = VALID_BIT;
+            fs_md->invalid_blocks[ii] = VALID_BIT;
             rcu_i = kzalloc(sizeof(rcu_item), GFP_KERNEL);   //TODO KERNEL o GFP_ATOMIC? Guarda appunti
             if (!rcu_i){
                 return -ENOMEM;
             }
 
-            rcu_i->id = ii-2;                               // Block ID starting from 0
+            rcu_i->id = ii;                               // Block ID starting from 0
             rcu_i->valid = VALID_BIT;
             rcu_i->data_len = temp_md->data_len;
             rcu_i->dev_order = temp_md->order; 
@@ -168,8 +168,8 @@ int bkeeper_fill_super(struct super_block *sb, void *data, int silent) {
             continue;
         }
 
-            printk("%s: block %ld is not valid\n", MOD_NAME, ii);
-        fs_md->invalid_blocks[ii-2] = INVALID_BIT;
+        printk("%s: block %ld is not valid\n", MOD_NAME, ii);
+        fs_md->invalid_blocks[ii] = INVALID_BIT;
     }
     return 0;
 }
@@ -218,7 +218,6 @@ static struct file_system_type bkeeper_fs = {
 };
 
 
-//TODO check on the_usctm params
 int init_module(void) {
 
     int ret;

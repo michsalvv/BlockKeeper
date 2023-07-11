@@ -69,16 +69,16 @@ asmlinkage int sys_invalidate_data(int offset)
     rcu_read_unlock();
 
     metadata->invalid_blocks[curr->id] = INVALID_BIT;
-    list_del_rcu(&(curr->node));    //TODO It delete while maintain timestmap order ??? Non penso proprio :(
+    list_del_rcu(&(curr->node));    //TODO It delete while maintain timestmap order ??? Non penso proprio :( Invece si credo
     
-    // Write back on device
-    
+
     bh = sb_bread(sb, curr->id + 2);
     if (!bh){
         mutex_unlock(&session.mutex_w);
         return -1;
     }
 
+    // Write back on device
     ((blk_metadata*)(bh->b_data))->valid = INVALID_BIT;
     mark_buffer_dirty(bh);
     printk("%s: [INV] Buffer marked as dirty\n", MOD_NAME);
@@ -88,7 +88,7 @@ asmlinkage int sys_invalidate_data(int offset)
 
     if(session.wb_synch) sync_dirty_buffer(bh);
     
-    // Grace Period
+    // Wait for grace period ends
     synchronize_rcu();
     // Free reference
     kfree(curr);
@@ -139,16 +139,16 @@ asmlinkage int sys_get_data(int offset, char* destination, size_t size)
     }
 
     if (!sb){
-        printk("%s: [GET] Error occured while retrieving superblock\n", MOD_NAME);
+        printk(KERN_ERR "%s: [GET] Error occured while retrieving superblock\n", MOD_NAME);
         return -EINVAL;
     }
 
     if (offset > NUM_BLOCKS){
-        printk("%s: [GET] A block was requested whose id [%d] is outside the manageable block limit.\n", MOD_NAME, offset);
+        printk(KERN_ERR "%s: [GET] A block was requested whose id [%d] is outside the manageable block limit.\n", MOD_NAME, offset);
         return -EINVAL;
     }
 
-    AUDIT printk("%s: [GET] on block %d\n", MOD_NAME, offset);
+    AUDIT printk(KERN_INFO "%s: [GET] Called on block %d\n", MOD_NAME, offset);
 
     rcu_read_lock();
     // AUDIT printk("%s: [GET] get lock. sleep started\n", MOD_NAME);
@@ -179,7 +179,7 @@ asmlinkage int sys_get_data(int offset, char* destination, size_t size)
     // printk("%s: [GET] rcu_i.id %d \n", MOD_NAME, rcu_i->id);
     
     rcu_read_unlock();
-    AUDIT printk("%s: [GET] block %d not valid\n", MOD_NAME, offset);
+    AUDIT printk(KERN_INFO "%s: [GET] Block %d not valid\n", MOD_NAME, offset);
     return -ENODATA;
 
 }
@@ -293,11 +293,12 @@ ssize_t dev_read (struct file * filp, char __user * buf, size_t len, loff_t * of
 
         // Check if there is enough space in the buffer
         if (rcu_i->data_len > (len-used_len)){
-            AUDIT printk(KERN_INFO "%s: [READ] No space in buffer for this block\n", MOD_NAME);
-            goto err;
+            AUDIT printk(KERN_INFO "%s: [READ] No space in buffer for block #%d of %d bytes. Space left: %d bytes \n", MOD_NAME, rcu_i->id, rcu_i->data_len, (len -used_len));
+            break;
         }
         readable_b = rcu_i->data_len;
-
+        
+        printk("%s: Reading from %d. Block len = %d | Used len = %d\n", MOD_NAME, rcu_i->id, rcu_i->data_len, used_len);
         // Read current block
         bh = (struct buffer_head *)sb_bread(filp->f_path.dentry->d_inode->i_sb, rcu_i->id + 2);
         if(!bh){
@@ -320,8 +321,8 @@ ssize_t dev_read (struct file * filp, char __user * buf, size_t len, loff_t * of
      * in questo modo non ci sarà una successiva invocazione della dev_read(). 
      * Possiamo farlo perchè siamo sicuri di aver letto tutti i possibili blocchi validi durante la critical section RCU. 
      * 
-     * KNOW ISSUE: effettuando invocazione della syscall read() successive, al giungimento esse non verranno più invocate poichè l'offset
-     * corrisponderà alla dimensione del file. Per riniziare la lettura è necessario aprire un nuovo file descriptor. 
+     * KNOW ISSUE: effettuando invocazione della syscall read() consecutive, al giungimento della fine del file, verranno sempre letti 0 bytes.
+     * Per riniziare la lettura è necessario aprire un nuovo file descriptor. 
      * E' necessario dunque gestire tale evento a livello applicativo. 
     */
 
@@ -332,21 +333,21 @@ ssize_t dev_read (struct file * filp, char __user * buf, size_t len, loff_t * of
     }
     rcu_read_unlock();            
 
+    if (used_len == 0){
+        kfree(temp_buf);
+        return 0;
+    }
+
+
     // Copy the data to the user space buffer
     ret = copy_to_user(buf,temp_buf, used_len);
     kfree(temp_buf);
 
     // Return the number of bytes read
     return used_len;
-
-err:
-    rcu_read_unlock();
-    kfree(temp_buf);
-    return -ENODATA;
 }
 
 
-//TODO Se viene aperto per scrivere, chiudi. Non credo servano controlli sul mounted, non posso aprire un file se non è montato il suo FS, nemmeno lo vedo penso
 int dev_open (struct inode * inode, struct file * filp){
     uint64_t *delivered_order;
 
