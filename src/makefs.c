@@ -103,12 +103,13 @@ int main(int argc, char *argv[])
 
 	for (ii=0; ii< total_blocks - 2; ii++){
 		realIndex = ii +1;
-		if (realIndex==2 || realIndex == 6){
+		if (realIndex==2 || realIndex == 6 || realIndex > 9){
 		// if (realIndex > 0){
 			sprintf(body, "%s %d\n", file_body, ii );
 			// Write metadata
 			md.valid = VALID_BIT;
 			md.data_len = strlen(body);
+			md.order = ii;
 			ret = write(fd, &md, sizeof(md));
 			if (ret != sizeof(md)){
 				printf("Metadata has not been written: [%ld] instead of [%ld]\n", ret, sizeof(md));
@@ -129,6 +130,7 @@ int main(int argc, char *argv[])
 		
 		// Write metadata
 		md.valid = INVALID_BIT;
+		md.order = 0;
 		ret = write(fd, &md, sizeof(md));
 			if (ret != sizeof(md)){
 				printf("Metadata has not been written: [%ld] instead of [%ld]\n", ret, sizeof(md));

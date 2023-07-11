@@ -248,29 +248,17 @@ int uninstall_syscalls(void *the_syscall_table){
 ssize_t dev_read (struct file * filp, char __user * buf, size_t len, loff_t * off){
     struct buffer_head *bh = NULL;
     struct inode * the_inode = filp->f_inode;
-    uint64_t file_size = the_inode->i_size ;
 
-    int ret, blk_to_skip, readed_blk, used_len = 0;
-    loff_t offset;
+    loff_t file_size = the_inode->i_size ;
+
+    uint64_t *delivered_order;
+    ssize_t ret, used_len = 0;
     char *temp_buf;
     
-    struct super_block *sb = filp->f_path.dentry->d_inode->i_sb;        // Va bene utilizzare anche il superblocco globale
-    struct fs_metadata *metadata = (struct fs_metadata *) sb->s_fs_info;
+    struct super_block *sb = filp->f_path.dentry->d_inode->i_sb;
+    struct list_head *rcu_head = &(((struct fs_metadata *) sb->s_fs_info)->rcu_list);
     rcu_item *rcu_i;
-
-    if (*off  >= file_size)
-        return 0;
-    else if (*off + len > file_size)
-        len = file_size - *off;         
-
-    // Skip superblock and file-inode. Block's id start from 1
-    blk_to_skip = (*off / DEFAULT_BLOCK_SIZE);
-
-    // Offset inside block
-    // offset = *off % DEFAULT_BLOCK_SIZE;  // not exploited
-
-    AUDIT printk("%s: [READ] (len = %ld) | (off = %lld)\n",MOD_NAME, len, *off);
-    AUDIT printk("%s: [READ] Blocks to skip %d\n",MOD_NAME, blk_to_skip);
+ 
 
     temp_buf = (char*) kzalloc(len, GFP_KERNEL);
     if (!temp_buf){
@@ -278,51 +266,50 @@ ssize_t dev_read (struct file * filp, char __user * buf, size_t len, loff_t * of
     }
     
     /**
-     * Non serve nessuna condizione sul timestamp perchè la RCU è già in ordine
-     * Inoltre, dato che vengono letti tutti i possibili blocchi validi durante la Critical Section in lettura, 
-     * Nessun blocco può essere invalidato nel frattempo! 
-     * Ovvero non ci saranno invocazioni successive di dev_read solamente per consumare la len richiesta, viene letto l'intero file in una singola chimata
-     * 
+     * Finchè ho spazio nel buffer leggo tutti i possibili blocchi validi. In questo modo allungo il grace period e riduco la gestione dell'invalidazione
+     * dei blocchi in concorrenza.
+     * Tuttavia, se l'operazione del VFS viene invocata tramite read() syscall manuali, è possibile che tra una read e l'altra avvenga una validazione. 
+     * In questo caso quindi è stato ritenuto più consistente andare a consegnare all'utente solamente blocchi la cui intera dimensione entrasse nel buffer.
+     * Mettere esempio:
+     *      Testo del Blocco: 1
+     *      Testo del Blocc
     */
-    rcu_read_lock();
-    struct list_head *head = &(metadata->rcu_list);
+    delivered_order = (uint64_t*) filp->private_data;
 
-    list_for_each_entry_rcu(rcu_i, &(metadata->rcu_list), node){
+    AUDIT printk(KERN_DEBUG "%s: [READ] Called with (len = %ld, off = %lld) | Last Order %lld\n",MOD_NAME, len, *off, *delivered_order);
+
+    rcu_read_lock();
+
+    list_for_each_entry_rcu(rcu_i, rcu_head, node){
         int readable_b;
 
-        // if (blk_to_skip-- >0){
-        //     continue;
-        // }
-        //TODO Salvare l'ultimo order letto. Alla prossima invocazione leggere a partire da blocchi con order maggiori.
-        //TODO Oppure mi salvo il blocco da finire da leggere, se alla next invocazione c'è ancora, allora leggo il restante, altrimenti leggo a partire dal nuovo blocco
-
         if (used_len == len){
-            AUDIT printk("%s: used_len == len\n", MOD_NAME);
-            rcu_read_unlock();
             break;
         }
-        // data_len non è indispensabile ma è utile in quasto caso per evitare di leggere il blocco solamente per capire se può essere consegnato all'utente
-        if (rcu_i->data_len <= (len-used_len)){
-            AUDIT printk("%s: [READ] data_len <= len-used_len\n", MOD_NAME);
-            readable_b = rcu_i->data_len;
-            readed_blk++;
-        }else{
-            AUDIT printk("%s: [READ] data_len > len-used_len\n", MOD_NAME);
-            readable_b = len - used_len;
+        // Check if the block is in the correct delivery order
+        if (rcu_i->dev_order <= *delivered_order){
+            continue;
         }
 
-        // Read target block
+        // Check if there is enough space in the buffer
+        if (rcu_i->data_len > (len-used_len)){
+            AUDIT printk(KERN_INFO "%s: [READ] No space in buffer for this block\n", MOD_NAME);
+            goto err;
+        }
+        readable_b = rcu_i->data_len;
+
+        // Read current block
         bh = (struct buffer_head *)sb_bread(filp->f_path.dentry->d_inode->i_sb, rcu_i->id + 2);
         if(!bh){
             rcu_read_unlock();
             return -EIO;
         }
-        printk("%s: [READ] rcu_id: %d, data_len %ld, used_len %d, readable %d\n",MOD_NAME, rcu_i->id, rcu_i->data_len, used_len, readable_b);
 
-        // Skip block metadata
+        // Skip metadata blocks
         strncpy(temp_buf + used_len, bh->b_data + sizeof(blk_metadata), readable_b);
         used_len += readable_b;
         brelse(bh);
+        *delivered_order = rcu_i->dev_order;
     }
 
     /**
@@ -333,42 +320,57 @@ ssize_t dev_read (struct file * filp, char __user * buf, size_t len, loff_t * of
      * in questo modo non ci sarà una successiva invocazione della dev_read(). 
      * Possiamo farlo perchè siamo sicuri di aver letto tutti i possibili blocchi validi durante la critical section RCU. 
      * 
-     * Nel caso in cui invece la len desiderata venga soddisfatta prima di poter leggere tutti i blocchi validi (ad esempio se invochiamo la dev_read tramite `read()`),
-     * andiamo a spostare l'offset a seconda del numero di byte letti dal device. In questo modo una successiva invocazione di una read sullo stesso file descriptor
-     * potrà ripartire dall'offset appena determinato. 
+     * KNOW ISSUE: effettuando invocazione della syscall read() successive, al giungimento esse non verranno più invocate poichè l'offset
+     * corrisponderà alla dimensione del file. Per riniziare la lettura è necessario aprire un nuovo file descriptor. 
+     * E' necessario dunque gestire tale evento a livello applicativo. 
     */
-    if (&rcu_i->node == head){
-        AUDIT printk("%s: No more block to read\n", MOD_NAME);
-        *off = file_size;
-    }else{
-        if (readed_blk>0)
-            *off += readed_blk * DEFAULT_BLOCK_SIZE;
-        else *off += used_len;
-    }
 
+    // Check if we have reached the end of the file
+    if (&rcu_i->node == rcu_head){
+        AUDIT printk(KERN_INFO "%s: [READ] No more block to read\n", MOD_NAME);
+        *off = file_size;
+    }
     rcu_read_unlock();            
 
-
-    if (used_len == 0){
-        kfree(temp_buf);
-        return 0;
-    }
-
+    // Copy the data to the user space buffer
     ret = copy_to_user(buf,temp_buf, used_len);
     kfree(temp_buf);
+
+    // Return the number of bytes read
     return used_len;
+
+err:
+    rcu_read_unlock();
+    kfree(temp_buf);
+    return -ENODATA;
 }
 
 
 //TODO Se viene aperto per scrivere, chiudi. Non credo servano controlli sul mounted, non posso aprire un file se non è montato il suo FS, nemmeno lo vedo penso
 int dev_open (struct inode * inode, struct file * filp){
-    AUDIT printk(KERN_INFO "%s: open operation called\n", MOD_NAME);
+    uint64_t *delivered_order;
+
+    // Check for permission
+    if (filp->f_mode & FMODE_WRITE) {
+      printk(KERN_ERR "%s: [OPEN] Cannot open file for write mode\n", MOD_NAME);
+      goto fail;
+    }
+
+    delivered_order = (uint64_t *)kzalloc(sizeof(uint64_t), GFP_KERNEL);
+    filp->private_data = delivered_order;
+
+    AUDIT printk(KERN_INFO "%s: [OPEN] open operation called\n", MOD_NAME);
     return 0;
+
+fail:
+    kfree(delivered_order);
+    return -EPERM;
 }
 
 //Non credo servano controlli
 int dev_release (struct inode * inode, struct file *filp){
-    AUDIT printk(KERN_INFO "%s: release operation called\n", MOD_NAME);
+    kfree(filp->private_data);
+    AUDIT printk(KERN_INFO "%s: [RELEASE] release operation called\n", MOD_NAME);
     return 0;
 }
 

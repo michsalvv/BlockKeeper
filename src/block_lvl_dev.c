@@ -38,6 +38,7 @@ int bkeeper_fill_super(struct super_block *sb, void *data, int silent) {
     struct sb_info *sb_disk;
     struct timespec64 curr_time;
     struct fs_metadata *fs_md;
+    struct blk_metadata *temp_md;
     uint64_t magic;
 
     size_t ii, init_blks;   
@@ -65,7 +66,7 @@ int bkeeper_fill_super(struct super_block *sb, void *data, int silent) {
 
     /* Check over manageable block size */
     if (sb_disk->block_size != DEFAULT_BLOCK_SIZE){
-        printk("%s: [FAILED] The driver can handle block of size %d but the device has a default block size of %d\n", MOD_NAME, DEFAULT_BLOCK_SIZE, sb_disk->block_size);
+        printk("%s: [FAILED] The driver can handle block of size %d but the device has a default block size of %lld\n", MOD_NAME, DEFAULT_BLOCK_SIZE, sb_disk->block_size);
         return -EIO;
     } 
 
@@ -126,7 +127,7 @@ int bkeeper_fill_super(struct super_block *sb, void *data, int silent) {
 
     /* Check over the actual number of blocks that has been allocated and the number of blocks that the driver can handle */
     if (init_blks > NUM_BLOCKS ){
-        printk("%s: [FAILED] Device has [%lld] blocks. The driver can handle max [%d] blocks\n", MOD_NAME, init_blks, NUM_BLOCKS);
+        printk("%s: [FAILED] Device has [%ld] blocks. The driver can handle max [%d] blocks\n", MOD_NAME, init_blks, NUM_BLOCKS);
         return -EINVAL;
     }
 
@@ -138,7 +139,7 @@ int bkeeper_fill_super(struct super_block *sb, void *data, int silent) {
     /* Initialize writers mutexes */ 
     mutex_init(&session.mutex_w);
 
-    // Iteriamo da due perchè non teniamo nella RCU il superblocco e l'inode (almeno per ora)
+    // Iteriamo da due perchè non teniamo nella RCU il superblocco e l'inode
     for (ii=2; ii<init_blks; ii++){
         // Leggi i metadati dei blocchi e se è valido lo metti nella RCU
         bh = sb_bread(sb, ii);
@@ -146,10 +147,11 @@ int bkeeper_fill_super(struct super_block *sb, void *data, int silent) {
             return -EINVAL;
         }
 
-        struct blk_metadata *temp_md = (struct blk_metadata*)bh->b_data;
+        temp_md = (struct blk_metadata*)bh->b_data;
         brelse(bh);
 
         if (temp_md->valid == VALID_BIT){
+            printk("%s: block %ld is valid\n", MOD_NAME, ii);
             fs_md->invalid_blocks[ii-2] = VALID_BIT;
             rcu_i = kzalloc(sizeof(rcu_item), GFP_KERNEL);   //TODO KERNEL o GFP_ATOMIC? Guarda appunti
             if (!rcu_i){
@@ -159,13 +161,14 @@ int bkeeper_fill_super(struct super_block *sb, void *data, int silent) {
             rcu_i->id = ii-2;                               // Block ID starting from 0
             rcu_i->valid = VALID_BIT;
             rcu_i->data_len = temp_md->data_len;
-            rcu_i->timestamp = 0; //TODO read timestamp from device, if NULL -> 0
+            rcu_i->dev_order = temp_md->order; 
             
             // No need of writing synch. The FS cannot be mounted twice.
             list_add_tail_rcu(&(rcu_i->node), &(fs_md->rcu_list));
             continue;
         }
 
+            printk("%s: block %ld is not valid\n", MOD_NAME, ii);
         fs_md->invalid_blocks[ii-2] = INVALID_BIT;
     }
     return 0;

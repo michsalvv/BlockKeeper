@@ -24,7 +24,7 @@ typedef struct {
 	char valid :1;	// TODO non serve, togliere
 	unsigned int id; // Can handle only 256 blocks, maybe we need more
 	size_t data_len;	//TODO forse basta mantenerla solamente in memoria, ragionare se è conveniente tenerla qui per velocità
-	uint64_t timestamp;
+	uint64_t dev_order;
 	struct list_head node;
 }rcu_item;
 

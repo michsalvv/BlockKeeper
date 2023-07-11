@@ -68,10 +68,11 @@ void vfs_read(){
         }
             
         ret = read(fd, buffer, size);
-
+        if (ret >0){
             
         printf("Readed bytes: %d\n", ret);
         printf("Returned buffer>\n%.*s\n", ret, buffer);
+        }
 
     } while (1);
     close(fd);

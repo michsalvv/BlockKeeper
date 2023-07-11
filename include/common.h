@@ -65,7 +65,7 @@ struct fs_dir_record {
 
 typedef struct __attribute__((packed)) blk_metadata{
 	char valid :1;
-	uint64_t timestamp;
+	uint64_t order;
 	// uint64_t id;	// NON SERVE IN MEMORIA Troppi, meno metadati possibili. 
 	uint64_t data_len;	// Aggiusta il tipo di dato a seconda di quanti byte di data è possibile mettere
 }blk_metadata;
