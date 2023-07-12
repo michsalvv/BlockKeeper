@@ -13,6 +13,10 @@ MODULE_LICENSE("GPL");
 MODULE_AUTHOR("Michele Salvatori");
 MODULE_DESCRIPTION("BlockKeeper: Block-Level Data Management Service");
 
+//TODO put in utils.c
+void list_sort(struct list_head *, struct list_head *);
+void dump_list(struct list_head *head);
+void free_rcu_list(struct list_head *);
 
 unsigned long the_syscall_table = 0x0;
 module_param(the_syscall_table, ulong, 0660);
@@ -39,6 +43,7 @@ int bkeeper_fill_super(struct super_block *sb, void *data, int silent) {
     struct timespec64 curr_time;
     struct fs_metadata *fs_md;
     struct blk_metadata *temp_md;
+    struct list_head temp_rcu_list;
     uint64_t magic;
 
     size_t ii, init_blks;   
@@ -134,7 +139,8 @@ int bkeeper_fill_super(struct super_block *sb, void *data, int silent) {
 
     /* Initialize block state array and RCU list for valid blocks */
     memset(fs_md->invalid_blocks, 0, sizeof(fs_md->invalid_blocks));
-    INIT_LIST_HEAD_RCU(&(fs_md->rcu_list));
+    /* Initialize a temp rcu list, not sorted */
+    INIT_LIST_HEAD_RCU(&temp_rcu_list);
 
     /* Initialize writers mutexes */ 
     mutex_init(&session.mutex_w);
@@ -151,26 +157,33 @@ int bkeeper_fill_super(struct super_block *sb, void *data, int silent) {
         brelse(bh);
 
         if (temp_md->valid == VALID_BIT){
-            printk("%s: block %ld is valid\n", MOD_NAME, ii);
+            
             fs_md->invalid_blocks[ii] = VALID_BIT;
             rcu_i = kzalloc(sizeof(rcu_item), GFP_KERNEL);   //TODO KERNEL o GFP_ATOMIC? Guarda appunti
+
             if (!rcu_i){
                 return -ENOMEM;
             }
 
-            rcu_i->id = ii;                               // Block ID starting from 0
+            rcu_i->id = ii;     // Block ID starting from 0
             rcu_i->valid = VALID_BIT;
             rcu_i->data_len = temp_md->data_len;
             rcu_i->dev_order = temp_md->order; 
             
             // No need of writing synch. The FS cannot be mounted twice.
-            list_add_tail_rcu(&(rcu_i->node), &(fs_md->rcu_list));
+            list_add_tail_rcu(&(rcu_i->node), &temp_rcu_list);
             continue;
         }
 
-        printk("%s: block %ld is not valid\n", MOD_NAME, ii);
         fs_md->invalid_blocks[ii] = INVALID_BIT;
     }
+
+    list_sort(&temp_rcu_list, &(fs_md->rcu_list));
+    AUDIT
+        dump_list(&(fs_md->rcu_list));
+
+    free_rcu_list(&temp_rcu_list);
+
     return 0;
 }
 
@@ -252,3 +265,48 @@ void cleanup_module(void) {
         
 }
 
+int compare_items(rcu_item *a, rcu_item *b) {
+    return (a->dev_order > b->dev_order) - (a->dev_order < b->dev_order);
+}
+
+void list_sort(struct list_head *old_head, struct list_head *sorted_list){
+    struct rcu_head rcu_head;
+    INIT_LIST_HEAD(sorted_list);
+
+    rcu_item *item, *temp;
+
+    list_for_each_entry_safe(item, temp, old_head, node){
+        list_del_rcu(&item->node);
+
+        struct list_head *pos;
+        list_for_each(pos, sorted_list){
+            rcu_item *sorted_item = list_entry(pos, rcu_item, node);
+
+            if (compare_items(item, sorted_item) < 0) {
+                list_add_rcu(&item->node, pos->prev);
+                break;
+            }
+        }
+        if (pos == sorted_list){
+            list_add_tail_rcu(&item->node, sorted_list);
+        }
+    }
+}
+
+void dump_list(struct list_head *head){
+    rcu_item *rcu_i;
+    printk("%s: ---- DUMP RCU LIST ----\n", MOD_NAME);
+
+    list_for_each_entry_rcu(rcu_i, head, node){
+        printk("%s: RCU Element [ID: %d| ORDER: %lld]\n", MOD_NAME, rcu_i->id, rcu_i->dev_order);
+    }
+
+}
+
+void free_rcu_list(struct list_head *head) {
+    rcu_item *item, *temp;
+    list_for_each_entry_safe(item, temp, head, node) {
+        list_del_rcu(&item->node);
+        kfree(item);
+    }
+}
