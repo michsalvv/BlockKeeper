@@ -6,10 +6,13 @@
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 
 #include "common.h"
 
+
+int generate_delivery_order(int);
 
 /*
 	This makefs will write the following information onto the disk
@@ -20,6 +23,7 @@
 int fd;
 int put_padding(int, int);
 void write_datablock(int fd, int block_number, char *body);
+int *delivery_order;
 
 int main(int argc, char *argv[])
 {
@@ -41,7 +45,7 @@ int main(int argc, char *argv[])
 
 	fd = open(argv[1], O_RDWR);
 	if (fd == -1) {
-		perror("Error opening the device");
+		printf("Error opening the device");
 		return -1;
 	}
 
@@ -53,12 +57,12 @@ int main(int argc, char *argv[])
 	ret = write(fd, (char *)&sb, sizeof(sb));
 
 	if (ret != sizeof(sb)) {
-		printf("Bytes written [%d] are not equal to the default block size.\n", (int)ret);
+		dprint("Bytes written [%d] are not equal to the default block size.\n", (int)ret);
 		close(fd);
 		return ret;
 	}
 
-	printf("Super block written succesfully\n");
+	dprint("Super block written succesfully\n");
 
 	/**
 	 * sb_bread di default legge blocchi da 4K, quindi se vogliamo leggere il primo blocco di dati ad esempio dobbiamo aggiungere del padding al sb
@@ -72,18 +76,18 @@ int main(int argc, char *argv[])
 	fstat(fd, &stats);
 	file_inode.file_size = stats.st_size;		
 
-	printf("File size is %ld\n",file_inode.file_size);
+	dprint("File size is %ld\n",file_inode.file_size);
 	fflush(stdout);
 
 	ret = write(fd, (char *)&file_inode, sizeof(file_inode));
-	printf("Writed file node %ld bytes\n", ret);
+	dprint("Writed file node %ld bytes\n", ret);
 	if (ret != sizeof(root_inode)) {
 		printf("The file inode was not written properly.\n");
 		close(fd);
 		return -1;
 	}
 
-	printf("File inode written succesfully.\n");
+	dprint("File inode written succesfully.\n");
 	
 	//padding for block 1
 	put_padding(sizeof(file_inode), FS_UNIQFILE_INODE_NUMBER);
@@ -94,6 +98,8 @@ int main(int argc, char *argv[])
 	*/
 	
 	total_blocks = stats.st_size / DEFAULT_BLOCK_SIZE;	
+	generate_delivery_order(total_blocks-2);
+
 
 	/**
 	 * Initialization of  blocks's metadata
@@ -124,11 +130,12 @@ int main(int argc, char *argv[])
 
 			// write empty datablock
 			put_padding(sizeof(struct blk_metadata), ii);
-			printf("Datablock n%d has been written succesfully.\n",ii);
+			dprint("Datablock n%d has been written succesfully.\n",ii);
 		}
 		
 	}
 
+	free(delivery_order);
 	close(fd);
 	return 0;
 }
@@ -138,7 +145,7 @@ int put_padding (int written_bytes, int index_block){
 	nbytes = DEFAULT_BLOCK_SIZE - written_bytes;
 	char *block_padding = malloc(nbytes);
 
-	printf("Necessary padding for block %d: %d (4096 - %d)\n", index_block, nbytes, written_bytes);
+	dprint("Necessary padding for block %d: %d (4096 - %d)\n", index_block, nbytes, written_bytes);
 
 	ret = write(fd, block_padding, nbytes);
 	if (ret != nbytes) {
@@ -146,7 +153,33 @@ int put_padding (int written_bytes, int index_block){
 		close(fd);
 		return -1;
 	}
-	printf("%d bytes of padding in the block n%d has been written sucessfully.\n", ret, index_block);
+	dprint("%d bytes of padding in the block n%d has been written sucessfully.\n", ret, index_block);
+	return 0;
+}
+
+int generate_delivery_order(int blocks_num){
+	int count = 0;
+	delivery_order = (int*) malloc(sizeof(int)*blocks_num);
+	srand(time(NULL));
+
+	while (count < blocks_num) {
+		int r = rand();
+		int random_num = r % (blocks_num);
+
+		int is_extracted = 0;
+        for (int i = 0; i < count; i++) {
+            if (delivery_order[i] == random_num) {
+                is_extracted = 1;
+                break;
+            }
+        }
+
+		if (!is_extracted) {
+			delivery_order[count] = random_num;
+			count++;
+        }
+	}
+
 	return 0;
 }
 
@@ -156,7 +189,10 @@ void write_datablock(int fd, int block_number, char *body) {
 
     md.valid = VALID_BIT;
     md.data_len = strlen(body);
-    md.order = block_number;
+    md.order = delivery_order[block_number];
+
+	// int a = generate_delivery_order(10);
+	// printf("Ordine di arrivo estratto per il blocco [%d] = %d\n", block_number, a);
 
     ret = write(fd, &md, sizeof(md));
     if (ret != sizeof(md)) {
