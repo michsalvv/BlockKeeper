@@ -3,6 +3,7 @@
 #include <unistd.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <string.h>
 
 #define CLEAR_SCREEN "\033[2J\033[H"
 #define RESET       "\033[0m"
@@ -15,6 +16,8 @@
 #define GET 156
 #define INVALIDATE 174
 
+#define MAX_MSG_SIZE 300 //TODO change (4kb-metadata)
+
 void get_action() {
     int block, ret, size;
     char buffer[4096];
@@ -24,20 +27,21 @@ void get_action() {
     printf("Bytes to read: ");
     scanf("%d", &size);
 
-    printf("Calling GET syscall on block %d\n", block);
     ret = syscall(GET, block, &buffer, size);
-    printf("Result: %d\n",ret);
 
-    if (ret >0)
-        printf("Buffer: \n%s", buffer);
+    if (ret >0){
+        printf("Readed [%d] bytes:\n\n------------------", ret);
+        printf("%s\n%s\n%s",BLUE, buffer, RESET);
+        printf("------------------\n");
+    }
 
     if (ret == -1 && errno == ENODATA)
         printf("Returned: %d\n", errno);
 }
 
 void inv_action() {
-    printf("%sInvalidate block number: %s", GREEN, RESET);
     int block, ret;
+    printf("%sInvalidate block number: %s", GREEN, RESET);
     scanf("%d", &block);
 
     printf("Calling INVALIDATE syscall on block %d\n", block);
@@ -45,10 +49,15 @@ void inv_action() {
     printf("Result: %d\n",ret);
 }
 
-void action3() {
-    printf("%sAction 3 selected.%s\n", GREEN, RESET);
-    int block, ret;
-    printf("Enter an integer value: ");
+void put_action() {
+    char user_buf[MAX_MSG_SIZE];
+    int ret;
+
+    printf("%sMessage to save: %s", GREEN, RESET);
+    scanf(" %[^\n]", user_buf);
+
+    ret = syscall(PUT, user_buf, strlen(user_buf));
+    printf("Returned %d\n", ret);
 
 }
 
@@ -106,14 +115,14 @@ int main() {
                 inv_action();
                 break;
             case 3:
-                action3();
+                put_action();
                 break;
             case 4:
                 vfs_read();
                 break;
             case 5:
                 printf("%sExiting...%s\n", RED, RESET);
-                break;
+                return 0;
             default:
                 printf("%sInput not valid!%s\n", RED, RESET);
                 break;
@@ -122,7 +131,7 @@ int main() {
         printf("\nPress Enter to continue...");
         while (getchar() != '\n') {}
         getchar();
-    } while (choice != 5);
+    } while (1);
 
     return 0;
 }
