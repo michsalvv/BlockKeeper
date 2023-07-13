@@ -101,6 +101,14 @@ asmlinkage int sys_invalidate_data(int offset)
     return 0;
 }
 
+/**
+ * int put_data(char * source, size_t size) 
+ * Used to put into one free block of the block-device size bytes of the user-space data identified by the source pointer, 
+ * this operation must be executed all or nothing; 
+ * the system call returns an integer representing the offset of the device (the block index) where data have been put; 
+ * if there is currently no room available on the device, the service should simply return the ENOMEM error;
+*/
+
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(4,17,0)
 __SYSCALL_DEFINEx(2, _put_data, char *, source, size_t, size)
 #else
@@ -108,10 +116,23 @@ asmlinkage int sys_put_data(char *source, size_t size)
 #endif
 {
     if(!session.mounted){
+        printk(KERN_ERR "%s: [PUT] Device not mounted\n", MOD_NAME);
         return -ENODEV;
     }
+    char a[300];
+    copy_from_user(a, source, size);
 
-    printk("%s: sys_put_data called with params %s and %ld\n", MOD_NAME, source, size);
+    // Check sulla size 
+
+    // Prendo il lock e trovo il blocco disponibile. Devo farlo in Critical Section altrimenti potrei scegliere lo stesso blocco di un altro chiamante e sovrascriverlo (o essere sovrascritto)
+    // Rilascio il lock
+
+    // Se ho blocchi liberi alloco tutto, intanto ho preso il mio blocco, l'ho reso valido e nessuno potrà prenderlo
+    // In caso di errore dovrò andare a marcare nuovamente invalido il blocco preso prima (serve lock anche qui forse, farlo in un goto)
+
+    // Allocate tutte le strutture, prenod il lock nuovamente in scrittura, mi inserisco come reader RCU e prendo la tail che mi darà last dev_order
+    // Devo farlo nel lock in scrittura perchè altrimenti un altro potrebbe scrivere contemporanemanete e decidere dunque di inserire lo stesso dev_order
+    printk(KERN_INFO "%s: [PUT] Called put(%s, %ld)\n", MOD_NAME, a, size);
     return 1;
 
 }
@@ -296,7 +317,7 @@ ssize_t dev_read (struct file * filp, char __user * buf, size_t len, loff_t * of
 
         // Check if there is enough space in the buffer
         if (rcu_i->data_len > (len-used_len)){
-            AUDIT printk(KERN_INFO "%s: [READ] No space in buffer for block #%d of %d bytes. Space left: %d bytes \n", MOD_NAME, rcu_i->id, rcu_i->data_len, (len -used_len));
+            AUDIT printk(KERN_INFO "%s: [READ] No space in buffer for block #%d of %ld bytes. Space left: %ld bytes \n", MOD_NAME, rcu_i->id, rcu_i->data_len, (len -used_len));
             break;
         }
         readable_b = rcu_i->data_len;
@@ -312,6 +333,7 @@ ssize_t dev_read (struct file * filp, char __user * buf, size_t len, loff_t * of
         strncpy(temp_buf + used_len, bh->b_data + sizeof(blk_metadata), readable_b);
         used_len += readable_b;
         brelse(bh);
+        
         *delivered_order = rcu_i->dev_order;
     }
 
