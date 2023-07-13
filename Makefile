@@ -4,7 +4,7 @@ block_lvl_dev-objs += src/block_lvl_dev.o src/dir.o src/file.o src/driver.o lib/
 FS_NAME := blockkeeper_fs
 
 EXTRA_CFLAGS   += -I$(PWD)/include
-N_BLOCKS = 12
+N_BLOCKS = 52
 
 ifeq ($(WB_DAEMON), 1)
 	KCPPFLAGS := "-DNUM_BLOCKS=$(N_BLOCKS) -DWB_DAEMON=$(WB_DAEMON)"
