@@ -13,6 +13,7 @@
 
 
 int generate_delivery_order(int);
+char body [50];
 
 /*
 	This makefs will write the following information onto the disk
@@ -22,7 +23,7 @@ int generate_delivery_order(int);
 */
 int fd;
 int put_padding(int, int);
-void write_datablock(int fd, int block_number, char *body);
+void write_datablock(int fd, int block_number);
 int *delivery_order;
 
 int main(int argc, char *argv[])
@@ -35,8 +36,8 @@ int main(int argc, char *argv[])
 	struct fs_inode file_inode;
 	struct fs_dir_record dir;
 	
-	char *file_body = "Testo del blocco ";//this is the default content of the unique file 
-	char body [50];
+	// char *file_body = "Testo del blocco ";//this is the default content of the unique file 
+	// char body [50];
 
 	if (argc != 2) {
 		printf("Usage: mkfs-singlefilefs <device>\n");
@@ -111,10 +112,10 @@ int main(int argc, char *argv[])
 
 	for (ii=0; ii< total_blocks - 2; ii++){
 
-		if (ii==1 || ii == 4 || ii >= 7){
+		// if (ii==1 || ii == 4 || ii >= 7){
+		if ( (ii % 2) == 0){
 
-			sprintf(body, "%s %d\n", file_body, ii);
-			write_datablock(fd, ii, body);
+			write_datablock(fd, ii);
 			put_padding(sizeof(struct blk_metadata) + strlen(body), ii);
 
 		}else{
@@ -183,16 +184,16 @@ int generate_delivery_order(int blocks_num){
 	return 0;
 }
 
-void write_datablock(int fd, int block_number, char *body) {
+void write_datablock(int fd, int block_number) {
     blk_metadata md;
 	int ret; 
+
+	sprintf(body, "Testo del blocco %d con ordine %d\n", block_number, delivery_order[block_number]);
+
 
     md.valid = VALID_BIT;
     md.data_len = strlen(body);
     md.order = delivery_order[block_number];
-
-	// int a = generate_delivery_order(10);
-	// printf("Ordine di arrivo estratto per il blocco [%d] = %d\n", block_number, a);
 
     ret = write(fd, &md, sizeof(md));
     if (ret != sizeof(md)) {
