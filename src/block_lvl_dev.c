@@ -76,7 +76,7 @@ int bkeeper_fill_super(struct super_block *sb, void *data, int silent) {
     } 
 
     /* Manteniamo nelle info del superblocco un riferimento alla RCU list e l'array di free nodes  */
-    fs_md = (struct fs_metadata*) kzalloc(sizeof(struct fs_metadata), GFP_ATOMIC);
+    fs_md = (struct fs_metadata*) kzalloc(sizeof(struct fs_metadata), GFP_KERNEL);
     sb->s_fs_info = (void*) fs_md; 
     sb->s_op = &fs_super_ops;
 
@@ -166,7 +166,6 @@ int bkeeper_fill_super(struct super_block *sb, void *data, int silent) {
             }
 
             rcu_i->id = ii;     // Block ID starting from 0
-            rcu_i->valid = VALID_BIT;
             rcu_i->data_len = temp_md->data_len;
             rcu_i->dev_order = temp_md->order; 
             
@@ -178,9 +177,10 @@ int bkeeper_fill_super(struct super_block *sb, void *data, int silent) {
         fs_md->invalid_blocks[ii] = INVALID_BIT;
     }
 
+    // No needs of synch
     list_sort(&temp_rcu_list, &(fs_md->rcu_list));
-    AUDIT
-        dump_list(&(fs_md->rcu_list));
+    // AUDIT
+    //     dump_list(&(fs_md->rcu_list));
 
     free_rcu_list(&temp_rcu_list);
 
@@ -270,15 +270,13 @@ int compare_items(rcu_item *a, rcu_item *b) {
 }
 
 void list_sort(struct list_head *old_head, struct list_head *sorted_list){
-    struct rcu_head rcu_head;
-    INIT_LIST_HEAD(sorted_list);
-
     rcu_item *item, *temp;
+    struct list_head *pos;
+    INIT_LIST_HEAD(sorted_list);
 
     list_for_each_entry_safe(item, temp, old_head, node){
         list_del_rcu(&item->node);
-
-        struct list_head *pos;
+        pos = NULL;
         list_for_each(pos, sorted_list){
             rcu_item *sorted_item = list_entry(pos, rcu_item, node);
 

@@ -37,18 +37,18 @@ asmlinkage int sys_invalidate_data(int offset)
     if(!session.mounted){
         return -ENODEV;
     }
-    AUDIT printk("%s: [INV] on block %d\n", MOD_NAME, offset);
+    AUDIT printk(KERN_INFO "%s: [INV] on block %d\n", MOD_NAME, offset);
 
     if (!sb){
-        printk("%s: sys_invalidate_data error retrieving superblock\n", MOD_NAME);
+        printk(KERN_ERR "%s: sys_invalidate_data error retrieving superblock\n", MOD_NAME);
         return -EINVAL;
     }
 
     // Cerchiamo un blocco valido da invalidare, quindi scorriamo la lista RCU che contiene solo blocchi validi
     // WRITE_LOCK;
-    printk("%s: [INV] Waiting for lock acquire\n", MOD_NAME);
+    // printk("%s: [INV] Waiting for lock acquire\n", MOD_NAME);
     mutex_lock(&session.mutex_w);
-    printk("%s: [INV] Lock acquired\n", MOD_NAME);
+    // printk("%s: [INV] Lock acquired\n", MOD_NAME);
 
     rcu_read_lock();
     list_for_each_entry_rcu(curr, &(metadata->rcu_list), node){
@@ -81,7 +81,7 @@ asmlinkage int sys_invalidate_data(int offset)
     // Write back on device
     ((blk_metadata*)(bh->b_data))->valid = INVALID_BIT;
     mark_buffer_dirty(bh);
-    printk("%s: [INV] Buffer marked as dirty\n", MOD_NAME);
+    // printk("%s: [INV] Buffer marked as dirty\n", MOD_NAME);
 
     // WRITE_UNLOCK;
     mutex_unlock(&session.mutex_w);
@@ -94,7 +94,7 @@ asmlinkage int sys_invalidate_data(int offset)
     kfree(curr);
     brelse(bh);
 
-    AUDIT printk("%s: [INV] deleted from RCU \n", MOD_NAME);
+    AUDIT printk("%s: [INV] Block %d succesfully invalidate\n", MOD_NAME, offset);
     // ragionare se la copia dei metadati nel device deve essere fatta nella CS
     // secondo me no, perchè tanto anche la dev_read è costruita leggendo dalla RCU, quindi se non è valido non lo legge il blocco
 
@@ -107,6 +107,9 @@ __SYSCALL_DEFINEx(2, _put_data, char *, source, size_t, size)
 asmlinkage int sys_put_data(char *source, size_t size)
 #endif
 {
+    if(!session.mounted){
+        return -ENODEV;
+    }
 
     printk("%s: sys_put_data called with params %s and %ld\n", MOD_NAME, source, size);
     return 1;
@@ -298,7 +301,6 @@ ssize_t dev_read (struct file * filp, char __user * buf, size_t len, loff_t * of
         }
         readable_b = rcu_i->data_len;
         
-        printk("%s: Reading from %d. Block len = %d | Used len = %d\n", MOD_NAME, rcu_i->id, rcu_i->data_len, used_len);
         // Read current block
         bh = (struct buffer_head *)sb_bread(filp->f_path.dentry->d_inode->i_sb, rcu_i->id + 2);
         if(!bh){
