@@ -68,10 +68,10 @@ asmlinkage int sys_invalidate_data(int offset)
 
     rcu_read_unlock();
 
-    metadata->invalid_blocks[curr->id] = INVALID_BIT;
-    list_del_rcu(&(curr->node));    //TODO It delete while maintain timestmap order ??? Non penso proprio :( Invece si credo
+    // metadata->invalid_blocks[curr->id] = INVALID_BIT;
+    markInvalid(&metadata->invalid_blocks, curr->id);
+    list_del_rcu(&(curr->node)); 
     
-
     bh = sb_bread(sb, curr->id + 2);
     if (!bh){
         mutex_unlock(&session.mutex_w);
@@ -114,27 +114,68 @@ __SYSCALL_DEFINEx(2, _put_data, char *, source, size_t, size)
 #else
 asmlinkage int sys_put_data(char *source, size_t size)
 #endif
-{
+{   
+    struct super_block *sb = superblock;
+    struct fs_metadata *metadata = (struct fs_metadata *) sb->s_fs_info;
+    char *temp_buf;
+    int ret, free_block = -1;
+    bool block_available = false;
+
     if(!session.mounted){
         printk(KERN_ERR "%s: [PUT] Device not mounted\n", MOD_NAME);
         return -ENODEV;
     }
-    char a[300];
-    copy_from_user(a, source, size);
 
-    // Check sulla size 
+    // Cannot copy on device messages bigger than (4096 - sizeof(blk_metadata)) bytes
+    if (size >= MAX_MSG_SIZE) return -EFBIG;
 
-    // Prendo il lock e trovo il blocco disponibile. Devo farlo in Critical Section altrimenti potrei scegliere lo stesso blocco di un altro chiamante e sovrascriverlo (o essere sovrascritto)
-    // Rilascio il lock
+    temp_buf = (char*) kzalloc(size, GFP_KERNEL);
+    if (!temp_buf){
+        return -ENOMEM;
+    }
 
+    // User message
+    ret = copy_from_user(temp_buf, source, size);
+
+    if (strlen(temp_buf) != size || ret < 0){
+        kfree(temp_buf);
+        return -EIO;
+    }
+
+    AUDIT
+        printk(KERN_INFO "%s: [PUT] Called (text: %s, size: %ld)\n", MOD_NAME, temp_buf, size);
+
+    /**
+     * Prendo il lock e trovo il blocco disponibile. 
+     * Bisogna farlo in Critical Section altrimenti potrei scegliere lo stesso blocco di un altro chiamante e sovrascriverlo (o essere sovrascritto)
+    */ 
+    mutex_lock(&session.mutex_w);
+    for (free_block = 0; free_block < NUM_BLOCKS; free_block++){
+        if (isInvalid(&metadata->invalid_blocks, free_block)){
+            clearInvalid(&metadata->invalid_blocks, free_block);
+            block_available = true;
+            break;
+        }
+    }
+    mutex_unlock(&session.mutex_w);
+
+    if (!block_available){
+        goto NO_MEM;
+    }
+    AUDIT
+        printk(KERN_INFO "%s: [PUT] Invalid block chosen to perform the put operation [%d]\n", MOD_NAME, free_block);
+
+    
     // Se ho blocchi liberi alloco tutto, intanto ho preso il mio blocco, l'ho reso valido e nessuno potrà prenderlo
     // In caso di errore dovrò andare a marcare nuovamente invalido il blocco preso prima (serve lock anche qui forse, farlo in un goto)
 
     // Allocate tutte le strutture, prenod il lock nuovamente in scrittura, mi inserisco come reader RCU e prendo la tail che mi darà last dev_order
     // Devo farlo nel lock in scrittura perchè altrimenti un altro potrebbe scrivere contemporanemanete e decidere dunque di inserire lo stesso dev_order
-    printk(KERN_INFO "%s: [PUT] Called put(%s, %ld)\n", MOD_NAME, a, size);
-    return 1;
+    return free_block;
 
+NO_MEM:
+    kfree(temp_buf);
+    return -ENOMEM;
 }
 
 /**
