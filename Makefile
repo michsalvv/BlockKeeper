@@ -1,5 +1,5 @@
 obj-m += block_lvl_dev.o
-block_lvl_dev-objs += src/block_lvl_dev.o src/dir.o src/file.o src/driver.o lib/scth.o
+block_lvl_dev-objs += src/block_lvl_dev.o src/dir.o src/file.o src/driver.o src/utils.o lib/scth.o 
 
 FS_NAME := blockkeeper_fs
 
@@ -16,12 +16,18 @@ endif
 # https://stackoverflow.com/questions/15430921/how-to-pass-parameters-from-makefile-to-linux-kernel-module-source-code
 
 
-A = $(shell cat /sys/module/the_usctm/parameters/sys_call_table_address)
+SYSCALL_TBL_ADDR = $(shell sudo -s cat /sys/module/the_usctm/parameters/sys_call_table_address)
 
 
-.PHONY: user
+.PHONY: user install all build clean
 
-all:
+all: build install
+
+install: insmod mount-dev
+uninstall: umount-dev
+	sudo rmmod block_lvl_dev.ko
+
+build:
 	KCPPFLAGS=$(KCPPFLAGS) make -C /lib/modules/$(shell uname -r)/build M=$(PWD) modules 
 
 clean:
@@ -31,7 +37,7 @@ compile:
 	gcc $(EXTRA_CFLAGS) src/makefs.c -o out/makefs
 
 user:
-	gcc user/user.c -o out/user
+	gcc user/test.c -o out/test
 
 make-fs:
 	rm image 2>/dev/null
@@ -45,4 +51,4 @@ mount-dev:
 	sudo mount -o loop -t $(FS_NAME) image $(PWD)/mount
 
 insmod:
-	insmod block_lvl_dev.ko the_syscall_table=$(A)
+	sudo insmod block_lvl_dev.ko the_syscall_table=$(SYSCALL_TBL_ADDR)
