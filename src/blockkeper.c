@@ -26,8 +26,9 @@ struct super_block *superblock;
 
 session_info session = {
             .mounted = 0,
+            .last_put_order = 0,
 #ifdef WB_DAEMON    
-            .wb_synch = 1
+            .wb_sync = 1
 #endif
         };
 
@@ -168,7 +169,10 @@ int bkeeper_fill_super(struct super_block *sb, void *data, int silent) {
             rcu_i->id = ii;     // Block ID starting from 0
             rcu_i->data_len = temp_md->data_len;
             rcu_i->dev_order = temp_md->order; 
-            
+
+            // Save last order number for future put operations
+            if (temp_md->order > session.last_put_order)
+                session.last_put_order = temp_md->order;
             // No need of writing synch. The FS cannot be mounted twice.
             list_add_tail_rcu(&(rcu_i->node), &temp_rcu_list);
             continue;

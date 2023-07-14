@@ -68,7 +68,6 @@ asmlinkage int sys_invalidate_data(int offset)
 
     rcu_read_unlock();
 
-    // metadata->invalid_blocks[curr->id] = INVALID_BIT;
     markInvalid(&metadata->invalid_blocks, curr->id);
     list_del_rcu(&(curr->node)); 
     
@@ -86,7 +85,7 @@ asmlinkage int sys_invalidate_data(int offset)
     // WRITE_UNLOCK;
     mutex_unlock(&session.mutex_w);
 
-    if(session.wb_synch) sync_dirty_buffer(bh);
+    if(session.wb_sync) sync_dirty_buffer(bh);
     
     // Wait for grace period ends
     synchronize_rcu();
@@ -117,6 +116,9 @@ asmlinkage int sys_put_data(char *source, size_t size)
 {   
     struct super_block *sb = superblock;
     struct fs_metadata *metadata = (struct fs_metadata *) sb->s_fs_info;
+    struct buffer_head *bh;
+    rcu_item *rcu_i;
+
     char *temp_buf;
     int ret, free_block = -1;
     bool block_available = false;
@@ -126,11 +128,18 @@ asmlinkage int sys_put_data(char *source, size_t size)
         return -ENODEV;
     }
 
-    // Cannot copy on device messages bigger than (4096 - sizeof(blk_metadata)) bytes
+    if (!sb){
+        printk(KERN_ERR "%s: [PUT] Error retrieving superblock\n", MOD_NAME);
+        return -EINVAL;
+    }
+
+    // Cannot copy on device messages bigger than (4096 - sizeof(blk_metadata)) bytes. We reserve one byte for '\n' char. 
     if (size >= MAX_MSG_SIZE) return -EFBIG;
 
-    temp_buf = (char*) kzalloc(size, GFP_KERNEL);
-    if (!temp_buf){
+    temp_buf = (char*) kzalloc(size+1, GFP_KERNEL);
+    rcu_i = kzalloc(sizeof(rcu_item), GFP_KERNEL); 
+
+    if (!temp_buf || !rcu_i){
         return -ENOMEM;
     }
 
@@ -142,13 +151,24 @@ asmlinkage int sys_put_data(char *source, size_t size)
         return -EIO;
     }
 
+    strncpy(temp_buf+size, '\n',1); //TODO BUG
+
     AUDIT
         printk(KERN_INFO "%s: [PUT] Called (text: %s, size: %ld)\n", MOD_NAME, temp_buf, size);
 
     /**
      * Prendo il lock e trovo il blocco disponibile. 
-     * Bisogna farlo in Critical Section altrimenti potrei scegliere lo stesso blocco di un altro chiamante e sovrascriverlo (o essere sovrascritto)
+     * Bisogna farlo in Critical Section altrimenti potrei scegliere lo stesso blocco di un altro chiamante e sovrascriverlo (o essere sovrascritto).
+     * Possiamo markarlo direttamente ora come invalido poichè finche non verrà aggiunto alla RCU List, i reader non saranno a conoscenza che tale blocco 
+     * è diventato valido
     */ 
+
+   /**
+    * Non possiamo ottimizzare ulteriormente la dimensione della CS poichè questo è l'unico modo per mantere la RCU in ordine.
+    * Se infatti spezzassimo la CS in due unità, nella prima viene individua il free_block, mentre nella seconda viene soltanto aggiunto l'elemento RCU, 
+    * se un thread B (spawnato dopo A) arriva prima di A ad aggiungere l'elemento alla lista RCU, pur avendo un numero d'ordine maggiore del blocco di A, 
+    * verrebbe aggiunto prima nella lista RCU, non mantenendo dunque l'ordine di arrivo. 
+   */
     mutex_lock(&session.mutex_w);
     for (free_block = 0; free_block < NUM_BLOCKS; free_block++){
         if (isInvalid(&metadata->invalid_blocks, free_block)){
@@ -157,7 +177,6 @@ asmlinkage int sys_put_data(char *source, size_t size)
             break;
         }
     }
-    mutex_unlock(&session.mutex_w);
 
     if (!block_available){
         goto NO_MEM;
@@ -165,7 +184,31 @@ asmlinkage int sys_put_data(char *source, size_t size)
     AUDIT
         printk(KERN_INFO "%s: [PUT] Invalid block chosen to perform the put operation [%d]\n", MOD_NAME, free_block);
 
+        
+    bh = sb_bread(sb, free_block + 2);
+    if (!bh){
+        goto REVERT;
+    }
+
+    ((blk_metadata*)(bh->b_data))->valid = VALID_BIT;
+    ((blk_metadata*)(bh->b_data))->data_len = size;
+    ((blk_metadata*)(bh->b_data))->order = session.last_put_order++;
+    rcu_i->id = free_block;
+    rcu_i->data_len = size;
+    rcu_i->dev_order = session.last_put_order;
     
+
+    memcpy(bh->b_data + sizeof(blk_metadata), temp_buf, size);
+    list_add_tail_rcu(&(rcu_i->node), &metadata->rcu_list);
+
+    mutex_unlock(&session.mutex_w);
+
+    mark_buffer_dirty(bh);
+    if (session.wb_sync) sync_dirty_buffer(bh);
+
+
+
+
     // Se ho blocchi liberi alloco tutto, intanto ho preso il mio blocco, l'ho reso valido e nessuno potrà prenderlo
     // In caso di errore dovrò andare a marcare nuovamente invalido il blocco preso prima (serve lock anche qui forse, farlo in un goto)
 
@@ -173,7 +216,15 @@ asmlinkage int sys_put_data(char *source, size_t size)
     // Devo farlo nel lock in scrittura perchè altrimenti un altro potrebbe scrivere contemporanemanete e decidere dunque di inserire lo stesso dev_order
     return free_block;
 
+REVERT:
+    kfree(rcu_i);
+    kfree(temp_buf);
+    clearInvalid(&metadata->invalid_blocks, free_block);
+    mutex_unlock(&session.mutex_w);
+    return -EIO;
+
 NO_MEM:
+    kfree(rcu_i);
     kfree(temp_buf);
     return -ENOMEM;
 }
@@ -347,6 +398,7 @@ ssize_t dev_read (struct file * filp, char __user * buf, size_t len, loff_t * of
 
     list_for_each_entry_rcu(rcu_i, rcu_head, node){
         int readable_b;
+        printk("%s: [READ] rcu_i->id %d | order = %d\n", MOD_NAME, rcu_i->id, rcu_i->dev_order);
 
         if (used_len == len){
             break;
