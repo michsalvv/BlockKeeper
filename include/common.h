@@ -19,6 +19,7 @@
 
 #define MAGIC 0x6D696368
 #define DEFAULT_BLOCK_SIZE 4096
+#define MAX_MSG_SIZE (DEFAULT_BLOCK_SIZE - sizeof(blk_metadata)) 
 
 #ifndef NUM_BLOCKS
 	#define NUM_BLOCKS 100
@@ -66,7 +67,7 @@ struct fs_dir_record {
 typedef struct __attribute__((packed)) blk_metadata{
 	char valid :1;
 	uint64_t order;
-	uint16_t data_len;	// Aggiusta il tipo di dato a seconda di quanti byte di data è possibile mettere
+	uint16_t data_len;	//TODO Aggiusta il tipo di dato a seconda di quanti byte di data è possibile mettere
 }blk_metadata;
 
 // Operations structs
