@@ -138,7 +138,8 @@ int bkeeper_fill_super(struct super_block *sb, void *data, int silent) {
 
 
     /* Initialize block state array and RCU list for valid blocks */
-    memset(fs_md->invalid_blocks, 0, sizeof(fs_md->invalid_blocks));
+    initializeInvalidBlockSet(&fs_md->invalid_blocks);
+    printk("%s: sizeof(fs_md->invalid_blocks) %d\n", MOD_NAME, sizeof(fs_md->invalid_blocks));
     /* Initialize a temp rcu list, not sorted */
     INIT_LIST_HEAD_RCU(&temp_rcu_list);
 
@@ -158,7 +159,6 @@ int bkeeper_fill_super(struct super_block *sb, void *data, int silent) {
 
         if (temp_md->valid == VALID_BIT){
             
-            fs_md->invalid_blocks[ii] = VALID_BIT;
             rcu_i = kzalloc(sizeof(rcu_item), GFP_KERNEL);   //TODO KERNEL o GFP_ATOMIC? Guarda appunti
 
             if (!rcu_i){
@@ -174,7 +174,8 @@ int bkeeper_fill_super(struct super_block *sb, void *data, int silent) {
             continue;
         }
 
-        fs_md->invalid_blocks[ii] = INVALID_BIT;
+        markInvalid(&fs_md->invalid_blocks, ii);
+        // fs_md->invalid_blocks[ii] = INVALID_BIT;
     }
 
     // No needs of synch
@@ -234,13 +235,11 @@ static struct file_system_type bkeeper_fs = {
 int init_module(void) {
 
     int ret;
-	AUDIT printk("%s: Received sys_call_table address %px\n",MOD_NAME,(void*)the_syscall_table);
-
     ret = register_filesystem(&bkeeper_fs);
 
     if (likely(ret == 0)){
-        printk("%s: sucessfully registered file system driver\n",MOD_NAME);
         install_syscalls((void*)the_syscall_table);
+        printk("%s: Sucessfully registered file system driver using System Call Table at %px\n",MOD_NAME, (void*)the_syscall_table);
     }
     else
         printk("%s: failed to unregister singlefilefs driver - error %d", MOD_NAME, ret);
