@@ -1,5 +1,5 @@
-obj-m += block_lvl_dev.o
-block_lvl_dev-objs += src/block_lvl_dev.o src/dir.o src/file.o src/driver.o src/utils.o lib/scth.o 
+obj-m += blockkeper.o
+blockkeper-objs += src/blockkeper.o src/dir.o src/file.o src/driver.o src/utils.o lib/scth.o 
 
 FS_NAME := blockkeeper_fs
 
@@ -21,11 +21,15 @@ SYSCALL_TBL_ADDR = $(shell sudo -s cat /sys/module/the_usctm/parameters/sys_call
 
 .PHONY: user install all build clean
 
-all: build install
+all: make-fs build install
 
-install: insmod mount-dev
-uninstall: umount-dev
-	sudo rmmod block_lvl_dev.ko
+install:
+	sudo insmod blockkeper.ko the_syscall_table=$(SYSCALL_TBL_ADDR) && \
+	sudo mount -o loop -t $(FS_NAME) image $(PWD)/mount
+
+uninstall:
+	sudo umount $(PWD)/mount && \
+	sudo rmmod blockkeper.ko
 
 build:
 	KCPPFLAGS=$(KCPPFLAGS) make -C /lib/modules/$(shell uname -r)/build M=$(PWD) modules 
@@ -33,22 +37,11 @@ build:
 clean:
 	make -C /lib/modules/$(shell uname -r)/build M=$(PWD) clean
 
-compile:
-	gcc $(EXTRA_CFLAGS) src/makefs.c -o out/makefs
-
 user:
 	gcc user/test.c -o out/test
 
 make-fs:
 	rm image 2>/dev/null
 	dd bs=4096 count=$(N_BLOCKS) if=/dev/zero of=image
+	gcc $(EXTRA_CFLAGS) src/makefs.c -o out/makefs && \
 	./out/makefs image
-
-umount-dev:
-	sudo umount $(PWD)/mount
-
-mount-dev:
-	sudo mount -o loop -t $(FS_NAME) image $(PWD)/mount
-
-insmod:
-	sudo insmod block_lvl_dev.ko the_syscall_table=$(SYSCALL_TBL_ADDR)
