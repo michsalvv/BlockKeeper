@@ -113,6 +113,7 @@ int main(int argc, char *argv[])
 	for (ii=0; ii< total_blocks - 2; ii++){
 
 		// if (ii==1 || ii == 4 || ii >= 7){
+		// if ( ii >= 0){
 		if ( (ii % 2) == 0){
 
 			write_datablock(fd, ii);

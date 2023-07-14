@@ -22,7 +22,11 @@ int main(int argc, char **argv){
     // }
 
     ret = syscall(PUT, "testo", 5);
-    printf("[MAIN] Returned %d\n", ret);
+    if (ret<0){
+        printf("Errno: %d\n", errno);
+        return -1;
+    }
+    printf("Returned %d\n", ret);
 
     // // while(1){
     //     for (i=1; i<12; i++){
