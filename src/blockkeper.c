@@ -173,7 +173,8 @@ int bkeeper_fill_super(struct super_block *sb, void *data, int silent) {
             // Save last order number for future put operations
             if (temp_md->order > session.last_put_order)
                 session.last_put_order = temp_md->order;
-            // No need of writing synch. The FS cannot be mounted twice.
+
+            // No need of writing sync: the FS cannot be mounted twice.
             list_add_tail_rcu(&(rcu_i->node), &temp_rcu_list);
             continue;
         }

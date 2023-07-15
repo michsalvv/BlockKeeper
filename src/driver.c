@@ -151,24 +151,22 @@ asmlinkage int sys_put_data(char *source, size_t size)
         return -EIO;
     }
 
-    strncpy(temp_buf+size, '\n',1); //TODO BUG
-
     AUDIT
         printk(KERN_INFO "%s: [PUT] Called (text: %s, size: %ld)\n", MOD_NAME, temp_buf, size);
+
+    temp_buf[size] = '\n';
+
 
     /**
      * Prendo il lock e trovo il blocco disponibile. 
      * Bisogna farlo in Critical Section altrimenti potrei scegliere lo stesso blocco di un altro chiamante e sovrascriverlo (o essere sovrascritto).
      * Possiamo markarlo direttamente ora come invalido poichè finche non verrà aggiunto alla RCU List, i reader non saranno a conoscenza che tale blocco 
      * è diventato valido
-    */ 
-
-   /**
-    * Non possiamo ottimizzare ulteriormente la dimensione della CS poichè questo è l'unico modo per mantere la RCU in ordine.
-    * Se infatti spezzassimo la CS in due unità, nella prima viene individua il free_block, mentre nella seconda viene soltanto aggiunto l'elemento RCU, 
-    * se un thread B (spawnato dopo A) arriva prima di A ad aggiungere l'elemento alla lista RCU, pur avendo un numero d'ordine maggiore del blocco di A, 
-    * verrebbe aggiunto prima nella lista RCU, non mantenendo dunque l'ordine di arrivo. 
-   */
+     * Non possiamo ottimizzare ulteriormente la dimensione della CS poichè questo è l'unico modo per mantere la RCU in ordine.
+     * Se infatti spezzassimo la CS in due unità, nella prima viene individuato il free_block, mentre nella seconda viene soltanto aggiunto l'elemento RCU: in questo
+     * scenario, se un thread B (spawnato dopo A) arriva prima di A ad aggiungere l'elemento alla lista RCU, pur avendo un numero d'ordine maggiore del blocco di A, 
+     * verrebbe aggiunto prima nella lista RCU, non mantenendo dunque l'ordine di arrivo. Questo perchè l'RCU è stata implementata in questo modo. 
+     */
     mutex_lock(&session.mutex_w);
     for (free_block = 0; free_block < NUM_BLOCKS; free_block++){
         if (isInvalid(&metadata->invalid_blocks, free_block)){
@@ -191,29 +189,28 @@ asmlinkage int sys_put_data(char *source, size_t size)
     }
 
     ((blk_metadata*)(bh->b_data))->valid = VALID_BIT;
-    ((blk_metadata*)(bh->b_data))->data_len = size;
+    ((blk_metadata*)(bh->b_data))->data_len = strlen(temp_buf);
     ((blk_metadata*)(bh->b_data))->order = session.last_put_order++;
     rcu_i->id = free_block;
-    rcu_i->data_len = size;
-    rcu_i->dev_order = session.last_put_order;
+    rcu_i->data_len = strlen(temp_buf);
+    rcu_i->dev_order = session.last_put_order;      // Mantenerlo in sessione è più veloce rispetto a dover scorrere nuovamente la lista fino a raggiungere la tail
     
+    // Write on device
+    memcpy(bh->b_data + sizeof(blk_metadata), temp_buf, strlen(temp_buf));
 
-    memcpy(bh->b_data + sizeof(blk_metadata), temp_buf, size);
-    list_add_tail_rcu(&(rcu_i->node), &metadata->rcu_list);
+    // Last step: add to RCU list. Now the new data are visible by others
+    list_add_tail_rcu(&rcu_i->node, &metadata->rcu_list);
 
     mutex_unlock(&session.mutex_w);
 
     mark_buffer_dirty(bh);
-    if (session.wb_sync) sync_dirty_buffer(bh);
+    if (session.wb_sync)
+        sync_dirty_buffer(bh);
 
+    // Wait for grace period ends
+    synchronize_rcu();
 
-
-
-    // Se ho blocchi liberi alloco tutto, intanto ho preso il mio blocco, l'ho reso valido e nessuno potrà prenderlo
-    // In caso di errore dovrò andare a marcare nuovamente invalido il blocco preso prima (serve lock anche qui forse, farlo in un goto)
-
-    // Allocate tutte le strutture, prenod il lock nuovamente in scrittura, mi inserisco come reader RCU e prendo la tail che mi darà last dev_order
-    // Devo farlo nel lock in scrittura perchè altrimenti un altro potrebbe scrivere contemporanemanete e decidere dunque di inserire lo stesso dev_order
+    kfree(temp_buf);
     return free_block;
 
 REVERT:
@@ -271,6 +268,8 @@ asmlinkage int sys_get_data(int offset, char* destination, size_t size)
     // AUDIT printk("%s: [GET] Sleep finished\n", MOD_NAME);
 
     list_for_each_entry_rcu(rcu_i, &(metadata->rcu_list), node){
+            printk("%s: [GET] rcu_i.id %d \n", MOD_NAME, rcu_i->id);
+        
         if (rcu_i->id == offset){
             bh = sb_bread(sb, offset +2);                           // +2: blocks of metadata
 
