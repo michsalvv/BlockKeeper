@@ -57,7 +57,9 @@ void put_action() {
     scanf(" %[^\n]", user_buf);
 
     ret = syscall(PUT, user_buf, strlen(user_buf));
-    printf("Returned %d\n", ret);
+    if (ret >0){
+        printf("Your message has been saved in block %s[%d]%s\n", GREEN, ret, RESET);
+    }
 
 }
 
