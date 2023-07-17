@@ -36,4 +36,8 @@ extern void clearInvalid(InvalidBlockSet* set, int blockId);
 extern void initializeInvalidBlockSet(InvalidBlockSet* set);
 extern bool isInvalid(InvalidBlockSet* set, int blockId);
 
+extern void list_sort(struct list_head *, struct list_head *);
+extern void dump_list(struct list_head *head);
+extern void free_rcu_list(struct list_head *);
+
 #endif

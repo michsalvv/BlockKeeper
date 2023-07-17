@@ -13,11 +13,6 @@ MODULE_LICENSE("GPL");
 MODULE_AUTHOR("Michele Salvatori");
 MODULE_DESCRIPTION("BlockKeeper: Block-Level Data Management Service");
 
-//TODO put in utils.c
-void list_sort(struct list_head *, struct list_head *);
-void dump_list(struct list_head *head);
-void free_rcu_list(struct list_head *);
-
 unsigned long the_syscall_table = 0x0;
 module_param(the_syscall_table, ulong, 0660);
 
@@ -140,7 +135,6 @@ int bkeeper_fill_super(struct super_block *sb, void *data, int silent) {
 
     /* Initialize block state array and RCU list for valid blocks */
     initializeInvalidBlockSet(&fs_md->invalid_blocks);
-    printk("%s: sizeof(fs_md->invalid_blocks) %d\n", MOD_NAME, sizeof(fs_md->invalid_blocks));
     /* Initialize a temp rcu list, not sorted */
     INIT_LIST_HEAD_RCU(&temp_rcu_list);
 
@@ -160,7 +154,7 @@ int bkeeper_fill_super(struct super_block *sb, void *data, int silent) {
 
         if (temp_md->valid == VALID_BIT){
             
-            rcu_i = kzalloc(sizeof(rcu_item), GFP_KERNEL);   //TODO KERNEL o GFP_ATOMIC? Guarda appunti
+            rcu_i = kzalloc(sizeof(rcu_item), GFP_KERNEL);
 
             if (!rcu_i){
                 return -ENOMEM;
@@ -180,7 +174,6 @@ int bkeeper_fill_super(struct super_block *sb, void *data, int silent) {
         }
 
         markInvalid(&fs_md->invalid_blocks, ii);
-        // fs_md->invalid_blocks[ii] = INVALID_BIT;
     }
 
     // No needs of synch
@@ -194,14 +187,18 @@ int bkeeper_fill_super(struct super_block *sb, void *data, int silent) {
 }
 
 static void bkeeper_kill_superblock(struct super_block *s) {
-    kill_block_super(s);
 
     if (!session.mounted) { 
-        printk("%s: umount procedure fail\n", MOD_NAME);
+        printk(KERN_ERR "%s: Umount procedure fail\n", MOD_NAME);
         return;
     }
     session.mounted = 0;
-    //TODO Free resources
+    
+    //Free resources
+    free_rcu_list(&((struct fs_metadata*)s->s_fs_info)->rcu_list);
+    kfree(&((struct fs_metadata*)s->s_fs_info)->invalid_blocks);
+    
+    kill_block_super(s);
     printk("%s: %s unmount successful.\n",MOD_NAME, FS_NAME);
     return;
 }
@@ -211,18 +208,18 @@ struct dentry *bkeeper_mount(struct file_system_type *fs_type, int flags, const 
     struct dentry *ret;
 
     if (session.mounted){
-        printk("%s: %s already mounted. Can be mounted only once\n", MOD_NAME, FS_NAME);
+        printk(KERN_ERR "%s: %s already mounted. Can be mounted only once\n", MOD_NAME, FS_NAME);
         return ERR_PTR(-EEXIST);    
     }
     session.mounted = 1;
 
     ret = mount_bdev(fs_type, flags, dev_name, data, bkeeper_fill_super);
     if (unlikely(IS_ERR(ret))){
-        printk("%s: [FAILED] error mounting %s",MOD_NAME, FS_NAME);
+        printk(KERN_ERR "%s: Mounting Error %s",MOD_NAME, FS_NAME);
         session.mounted = 0;
     }
     else
-        printk("%s: %s is succesfully mounted on from device %s\n",MOD_NAME, FS_NAME, dev_name);
+        printk("%s: %s successfully mounted on from device %s\n",MOD_NAME, FS_NAME, dev_name);
 
     return ret;
 }
@@ -244,10 +241,9 @@ int init_module(void) {
 
     if (likely(ret == 0)){
         install_syscalls((void*)the_syscall_table);
-        printk("%s: Sucessfully registered file system driver using System Call Table at %px\n",MOD_NAME, (void*)the_syscall_table);
     }
     else
-        printk("%s: failed to unregister singlefilefs driver - error %d", MOD_NAME, ret);
+        printk(KERN_ERR "%s: failed to unregister singlefilefs driver - error %d", MOD_NAME, ret);
 
     return ret;
 }
@@ -255,7 +251,6 @@ int init_module(void) {
 void cleanup_module(void) {
 
     int ret;
-    printk("%s: shutting down\n",MOD_NAME);
 
     //unregister filesystem
     ret = unregister_filesystem(&bkeeper_fs);
@@ -263,52 +258,8 @@ void cleanup_module(void) {
     uninstall_syscalls((void*)the_syscall_table);
 
     if (likely(ret == 0))
-        printk("%s: sucessfully unregistered file system driver\n",MOD_NAME);
+        printk("%s: Sucessfully unregistered file system driver\n",MOD_NAME);
     else
-        printk("%s: failed to unregister %s driver - error %d", MOD_NAME, FS_NAME, ret);
+        printk(KERN_ERR "%s: failed to unregister %s driver - error %d", MOD_NAME, FS_NAME, ret);
         
-}
-
-int compare_items(rcu_item *a, rcu_item *b) {
-    return (a->dev_order > b->dev_order) - (a->dev_order < b->dev_order);
-}
-
-void list_sort(struct list_head *old_head, struct list_head *sorted_list){
-    rcu_item *item, *temp;
-    struct list_head *pos;
-    INIT_LIST_HEAD(sorted_list);
-
-    list_for_each_entry_safe(item, temp, old_head, node){
-        list_del_rcu(&item->node);
-        pos = NULL;
-        list_for_each(pos, sorted_list){
-            rcu_item *sorted_item = list_entry(pos, rcu_item, node);
-
-            if (compare_items(item, sorted_item) < 0) {
-                list_add_rcu(&item->node, pos->prev);
-                break;
-            }
-        }
-        if (pos == sorted_list){
-            list_add_tail_rcu(&item->node, sorted_list);
-        }
-    }
-}
-
-void dump_list(struct list_head *head){
-    rcu_item *rcu_i;
-    printk("%s: ---- DUMP RCU LIST ----\n", MOD_NAME);
-
-    list_for_each_entry_rcu(rcu_i, head, node){
-        printk("%s: RCU Element [ID: %d| ORDER: %lld]\n", MOD_NAME, rcu_i->id, rcu_i->dev_order);
-    }
-
-}
-
-void free_rcu_list(struct list_head *head) {
-    rcu_item *item, *temp;
-    list_for_each_entry_safe(item, temp, head, node) {
-        list_del_rcu(&item->node);
-        kfree(item);
-    }
 }

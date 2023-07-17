@@ -51,7 +51,7 @@ MODULE_DESCRIPTION("system call table hacker");
 #define LIBNAME "SCTH"
 
 
-#define AUDIT if(1)
+#define AUDIT if(0)
 #define LEVEL3_AUDIT if(0)
 
 #define MAX_ACQUIRES 4
@@ -96,14 +96,15 @@ int get_entries(int * entry_ids, int num_acquires, unsigned long sys_call_table,
         int ret = 0;
 	int restore[MAX_ACQUIRES] = {[0 ... (MAX_ACQUIRES-1)] -1};
 
-
+	AUDIT
         printk("%s: trying to get %d entries from the sys-call table at address %px\n",LIBNAME,num_acquires, (void*)sys_call_table);
 	if(num_acquires < 1){
        		 printk("%s: less than 1 sys-call table entry requested\n",LIBNAME);
 		 return -1;
 	}
 	if(num_acquires > MAX_ACQUIRES){
-       		 printk("%s: more than %d sys-call table entries requested\n",LIBNAME, MAX_ACQUIRES);
+		AUDIT
+			 printk("%s: more than %d sys-call table entries requested\n",LIBNAME, MAX_ACQUIRES);
 		 return -1;
 	}
 
@@ -121,16 +122,16 @@ int get_entries(int * entry_ids, int num_acquires, unsigned long sys_call_table,
                         	if(j < (num_acquires-1)){
 				       	restore[++j] = i;
 					ret++;
-                        		printk("%s: acquiring table entry %d\n",LIBNAME,i);
+							AUDIT printk("%s: acquiring table entry %d\n",LIBNAME,i);
 				}
                         	if(j < (num_acquires-1)){
                         		restore[++j] = z;
 					ret++;
-                        		printk("%s: acquiring table entry %d\n",LIBNAME,z);
+                        	AUDIT printk("%s: acquiring table entry %d\n",LIBNAME,z);
 				}
 				for(k=z+1;k<256 && j < (num_acquires-1); k++){
 					if(p[i] == p[k]){
-                        			printk("%s: acquiring table entry %d\n",LIBNAME,k);
+                        	AUDIT printk("%s: acquiring table entry %d\n",LIBNAME,k);
                         			restore[++j] = k;
 						ret++;
 					}
@@ -143,12 +144,12 @@ int get_entries(int * entry_ids, int num_acquires, unsigned long sys_call_table,
                 }
         }
 
-        printk("%s: could not locate %d available entries in the sys-call table\n",LIBNAME,num_acquires);
+        printk(KERN_ERR "%s: could not locate %d available entries in the sys-call table\n",LIBNAME,num_acquires);
 
 	return -1;
 
 found_available_entries:
-        printk("%s: ret is %d\n",LIBNAME,ret);
+    AUDIT printk("%s: ret is %d\n",LIBNAME,ret);
 	memcpy((char*)entry_ids,(char*)restore,ret*sizeof(int));
 	*sys_ni_sys_call = addr;
 

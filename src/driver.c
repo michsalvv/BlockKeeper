@@ -35,24 +35,21 @@ asmlinkage int sys_invalidate_data(int offset)
     unsigned int target_valid = 0;
     
     if(!session.mounted){
+        printk(KERN_ERR "%s: [INV] Device not mounted\n", MOD_NAME);
         return -ENODEV;
     }
-    AUDIT printk(KERN_INFO "%s: [INV] on block %d\n", MOD_NAME, offset);
 
     if (!sb){
-        printk(KERN_ERR "%s: sys_invalidate_data error retrieving superblock\n", MOD_NAME);
-        return -EINVAL;
+        printk(KERN_ERR "%s: [INV] error retrieving superblock\n", MOD_NAME);
+        return -EIO;
     }
 
-    // Cerchiamo un blocco valido da invalidare, quindi scorriamo la lista RCU che contiene solo blocchi validi
     // WRITE_LOCK;
-    // printk("%s: [INV] Waiting for lock acquire\n", MOD_NAME);
     mutex_lock(&session.mutex_w);
-    // printk("%s: [INV] Lock acquired\n", MOD_NAME);
 
+    // Look for the target block to invalidate. Iterate over the RCU list of valid blocks
     rcu_read_lock();
     list_for_each_entry_rcu(curr, &(metadata->rcu_list), node){
-        printk("%s: blk %d\n", MOD_NAME, curr->id);
         if (curr->id == offset){
             target_valid = 1;
             break;
@@ -60,7 +57,7 @@ asmlinkage int sys_invalidate_data(int offset)
     }
 
     if (!target_valid){
-        AUDIT printk("%s: [INV] target not valid\n", MOD_NAME);
+        AUDIT printk(KERN_INFO "%s: [INV] Target block [%d] is not valid\n", MOD_NAME, offset);
         rcu_read_unlock();
         mutex_unlock(&session.mutex_w);
         return -ENODATA;
@@ -74,13 +71,12 @@ asmlinkage int sys_invalidate_data(int offset)
     bh = sb_bread(sb, curr->id + 2);
     if (!bh){
         mutex_unlock(&session.mutex_w);
-        return -1;
+        return -EIO;
     }
 
     // Write back on device
     ((blk_metadata*)(bh->b_data))->valid = INVALID_BIT;
     mark_buffer_dirty(bh);
-    // printk("%s: [INV] Buffer marked as dirty\n", MOD_NAME);
 
     // WRITE_UNLOCK;
     mutex_unlock(&session.mutex_w);
@@ -93,9 +89,7 @@ asmlinkage int sys_invalidate_data(int offset)
     kfree(curr);
     brelse(bh);
 
-    AUDIT printk("%s: [INV] Block %d succesfully invalidate\n", MOD_NAME, offset);
-    // ragionare se la copia dei metadati nel device deve essere fatta nella CS
-    // secondo me no, perchè tanto anche la dev_read è costruita leggendo dalla RCU, quindi se non è valido non lo legge il blocco
+    AUDIT printk(KERN_INFO "%s: [INV] Block %d succesfully invalidate\n", MOD_NAME, offset);
 
     return 0;
 }
@@ -130,7 +124,7 @@ asmlinkage int sys_put_data(char *source, size_t size)
 
     if (!sb){
         printk(KERN_ERR "%s: [PUT] Error retrieving superblock\n", MOD_NAME);
-        return -EINVAL;
+        return -EIO;
     }
 
     // Cannot copy on device messages bigger than (4096 - sizeof(blk_metadata)) bytes. We reserve one byte for '\n' char. 
@@ -140,7 +134,7 @@ asmlinkage int sys_put_data(char *source, size_t size)
     rcu_i = kzalloc(sizeof(rcu_item), GFP_KERNEL); 
 
     if (!temp_buf || !rcu_i){
-        return -ENOMEM;
+        return -EIO;
     }
 
     // User message
@@ -151,9 +145,10 @@ asmlinkage int sys_put_data(char *source, size_t size)
         return -EIO;
     }
 
-    AUDIT
-        printk(KERN_INFO "%s: [PUT] Called (text: %s, size: %ld)\n", MOD_NAME, temp_buf, size);
+    // AUDIT
+    //     printk(KERN_INFO "%s: [PUT] Called (text: %s, size: %ld)\n", MOD_NAME, temp_buf, size);
 
+    // Implementation choice: this system call will add '\n' to the end of the user message
     temp_buf[size] = '\n';
 
 
@@ -177,10 +172,11 @@ asmlinkage int sys_put_data(char *source, size_t size)
     }
 
     if (!block_available){
+        printk(KERN_INFO "%s: [PUT] No space for the new user message\n", MOD_NAME);
         goto NO_MEM;
     }
     AUDIT
-        printk(KERN_INFO "%s: [PUT] Invalid block chosen to perform the put operation [%d]\n", MOD_NAME, free_block);
+        printk(KERN_INFO "%s: [PUT] Target invalid block chosen: [%d]\n", MOD_NAME, free_block);
 
         
     bh = sb_bread(sb, free_block + 2);
@@ -221,6 +217,7 @@ REVERT:
     return -EIO;
 
 NO_MEM:
+    mutex_unlock(&session.mutex_w);
     kfree(rcu_i);
     kfree(temp_buf);
     return -ENOMEM;
@@ -234,7 +231,6 @@ NO_MEM:
  * or zero if no data is currently kept by the device block;
  * this service should return the ENODATA error if no data is currently valid and associated with the offset parameter.
 */
-//TODO Aggiungere qualche controllo in più
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(4,17,0)
 __SYSCALL_DEFINEx(3, _get_data, int, offset, char*, destination, size_t, size)
 #else
@@ -248,12 +244,13 @@ asmlinkage int sys_get_data(int offset, char* destination, size_t size)
     size_t to_read, not_readed;
 
     if(!session.mounted){
+        printk(KERN_ERR "%s: [GET] Device not mounted\n", MOD_NAME);
         return -ENODEV;
     }
 
     if (!sb){
         printk(KERN_ERR "%s: [GET] Error occured while retrieving superblock\n", MOD_NAME);
-        return -EINVAL;
+        return -EIO;
     }
 
     if (offset > NUM_BLOCKS){
@@ -261,14 +258,11 @@ asmlinkage int sys_get_data(int offset, char* destination, size_t size)
         return -EINVAL;
     }
 
-    AUDIT printk(KERN_INFO "%s: [GET] Called on block %d\n", MOD_NAME, offset);
+    AUDIT printk(KERN_INFO "%s: [GET] Requested block %d\n", MOD_NAME, offset);
 
     rcu_read_lock();
-    // AUDIT printk("%s: [GET] get lock. sleep started\n", MOD_NAME);
-    // AUDIT printk("%s: [GET] Sleep finished\n", MOD_NAME);
 
     list_for_each_entry_rcu(rcu_i, &(metadata->rcu_list), node){
-            printk("%s: [GET] rcu_i.id %d \n", MOD_NAME, rcu_i->id);
         
         if (rcu_i->id == offset){
             bh = sb_bread(sb, offset +2);                           // +2: blocks of metadata
@@ -284,17 +278,13 @@ asmlinkage int sys_get_data(int offset, char* destination, size_t size)
 
             not_readed = copy_to_user(destination, bh->b_data + sizeof(blk_metadata), to_read);
             brelse(bh);
-            // printk("%s: [GET] rcu_i.id %d \n", MOD_NAME, rcu_i->id);
-            // msleep(2*1000);
             rcu_read_unlock();            
             return (to_read - not_readed);
         }    
      }   
-    // msleep(10*1000);
-    // printk("%s: [GET] rcu_i.id %d \n", MOD_NAME, rcu_i->id);
     
     rcu_read_unlock();
-    AUDIT printk(KERN_INFO "%s: [GET] Block %d not valid\n", MOD_NAME, offset);
+    AUDIT printk(KERN_INFO "%s: [GET] Block %d is not valid\n", MOD_NAME, offset);
     return -ENODATA;
 
 }
@@ -310,8 +300,6 @@ long sys_invalidate_data = (unsigned long) __x64_sys_invalidate_data;
 int install_syscalls( void* the_syscall_table){
 
     int ret,i;
-    printk("%s: Installing %d Hacked Syscall Entries", MOD_NAME, HACKED_ENTRIES);
-    printk("%s: [driver.c] Received sys_call_table address %px\n",MOD_NAME,the_syscall_table);
 
     new_syscall_array[0] = (unsigned long)sys_put_data;
     new_syscall_array[1] = (unsigned long)sys_get_data;
@@ -319,7 +307,7 @@ int install_syscalls( void* the_syscall_table){
 
     ret = get_entries(restore,HACKED_ENTRIES,(unsigned long*)the_syscall_table,&the_ni_syscall);
     if (ret != HACKED_ENTRIES){
-        printk("%s: could not hack %d entries (just %d)\n",MOD_NAME,HACKED_ENTRIES,ret); 
+        printk(KERN_ERR "%s: Could not hack %d entries (just %d)\n",MOD_NAME,HACKED_ENTRIES,ret); 
         return -1;      
     }
 
@@ -330,8 +318,8 @@ int install_syscalls( void* the_syscall_table){
     }
 
 	protect_memory();
+    printk("%s: [%d] Hacked Syscall Entries successfully installed in Sys-call Table at address %p", MOD_NAME, HACKED_ENTRIES, the_syscall_table);
 
-    printk("%s: all new system-calls correctly installed on sys-call table\n",MOD_NAME);
     return 0;
 }
 
@@ -343,7 +331,7 @@ int uninstall_syscalls(void *the_syscall_table){
             ((unsigned long *)the_syscall_table)[restore[i]] = the_ni_syscall;
     }
 	protect_memory();
-    printk("%s: sys-call table restored to its original content\n",MOD_NAME);
+    printk("%s: Sys-Call Table restored to its original content\n",MOD_NAME);
 
     return 0;
 }
@@ -397,7 +385,6 @@ ssize_t dev_read (struct file * filp, char __user * buf, size_t len, loff_t * of
 
     list_for_each_entry_rcu(rcu_i, rcu_head, node){
         int readable_b;
-        printk("%s: [READ] rcu_i->id %d | order = %d\n", MOD_NAME, rcu_i->id, rcu_i->dev_order);
 
         if (used_len == len){
             break;
@@ -476,7 +463,7 @@ int dev_open (struct inode * inode, struct file * filp){
     delivered_order = (uint64_t *)kzalloc(sizeof(uint64_t), GFP_KERNEL);
     filp->private_data = delivered_order;
 
-    AUDIT printk(KERN_INFO "%s: [OPEN] open operation called\n", MOD_NAME);
+    // AUDIT printk(KERN_INFO "%s: [OPEN] open operation called\n", MOD_NAME);
     return 0;
 
 fail:
@@ -487,7 +474,7 @@ fail:
 //Non credo servano controlli
 int dev_release (struct inode * inode, struct file *filp){
     kfree(filp->private_data);
-    AUDIT printk(KERN_INFO "%s: [RELEASE] release operation called\n", MOD_NAME);
+    // AUDIT printk(KERN_INFO "%s: [RELEASE] release operation called\n", MOD_NAME);
     return 0;
 }
 

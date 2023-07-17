@@ -19,7 +19,7 @@ void get_action() {
         goto ret;
     }
 
-    get_handler(errno, NULL);
+    get_handler(errno, block);
 
 ret:
     fflush(stdout);
@@ -37,7 +37,7 @@ void inv_action() {
         goto ret;
     }
 
-    inv_handler(errno, NULL);
+    inv_handler(errno, block);
 
 ret:
     fflush(stdout);
@@ -59,7 +59,7 @@ void put_action() {
         goto ret;
     }
 
-    put_handler(errno, NULL);
+    put_handler(errno);
 
 ret:
     fflush(stdout);
