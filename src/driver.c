@@ -2,7 +2,6 @@
 #include <linux/syscalls.h>
 #include <linux/buffer_head.h>
 #include <linux/rculist.h>
-#include <linux/delay.h>    // For test
 
 #include "blk_fs.h"
 #include "../lib/include/scth.h"
@@ -471,7 +470,6 @@ fail:
     return -EPERM;
 }
 
-//Non credo servano controlli
 int dev_release (struct inode * inode, struct file *filp){
     kfree(filp->private_data);
     // AUDIT printk(KERN_INFO "%s: [RELEASE] release operation called\n", MOD_NAME);

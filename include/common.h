@@ -38,14 +38,13 @@
  * Definition of necessary structures both for the kernel module and for the formatting of the device
  * - Inode definition
  * - Superblock definition
- * - Dir definition
+ * - Dir de// Usefull have this also in RCU finition
  * - Block Metadata definition
 */
 
 struct fs_inode {
 	mode_t mode;
 	uint64_t inode_no;
-	uint64_t data_block_number; //not exploited is equal to file_size / default_block_size
 
 	union {
 		uint64_t file_size;
@@ -65,9 +64,9 @@ struct fs_dir_record {
 };
 
 typedef struct __attribute__((packed)) blk_metadata{
-	char valid :1;
+	char valid;
 	uint64_t order;
-	uint16_t data_len;	//TODO Aggiusta il tipo di dato a seconda di quanti byte di data è possibile mettere
+	uint16_t data_len;
 }blk_metadata;
 
 // Operations structs

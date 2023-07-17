@@ -189,7 +189,7 @@ void write_datablock(int fd, int block_number) {
     blk_metadata md;
 	int ret; 
 
-	sprintf(body, "Testo del blocco %d con ordine %d.\n", block_number, delivery_order[block_number]);
+	sprintf(body, "Text of block #%d with delivery order %d.\n", block_number, delivery_order[block_number]);
 
 
     md.valid = VALID_BIT;

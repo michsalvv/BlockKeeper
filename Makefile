@@ -4,12 +4,13 @@ blockkeper-objs += src/blockkeper.o src/dir.o src/file.o src/driver.o src/utils.
 FS_NAME := blockkeeper_fs
 
 EXTRA_CFLAGS   += -I$(PWD)/include
-N_BLOCKS = 52
+NBLOCKS = 52
+WB_DAEMON = 1
 
-ifeq ($(WB_DAEMON), 1)
-	KCPPFLAGS := "-DNUM_BLOCKS=$(N_BLOCKS) -DWB_DAEMON=$(WB_DAEMON)"
+ifeq ($(WB_DAEMON), 0)
+	KCPPFLAGS := "-DNUM_BLOCKS=$(NBLOCKS) -DWB_DAEMON=$(WB_DAEMON)"
 else
-	KCPPFLAGS := "-DNUM_BLOCKS=$(N_BLOCKS)"
+	KCPPFLAGS := "-DNUM_BLOCKS=$(NBLOCKS)"
 endif
 
 
@@ -46,10 +47,10 @@ user:
 	gcc user/blockkeeper_cli.c user/error_handler.c -o blockkeeper_cli
 
 test:
-	gcc user/blockkeeper_tests.c user/error_handler.c -DNUM_BLOCKS=$(N_BLOCKS) -o blockkeeper_tests
+	gcc user/blockkeeper_tests.c user/error_handler.c -DNUM_BLOCKS=$(NBLOCKS) -o blockkeeper_tests
 
 make-fs:
 	rm image 2>/dev/null
-	dd bs=4096 count=$(N_BLOCKS) if=/dev/zero of=image
+	dd bs=4096 count=$(NBLOCKS) if=/dev/zero of=image
 	gcc $(EXTRA_CFLAGS) src/makefs.c -o out/makefs && \
 	./out/makefs image

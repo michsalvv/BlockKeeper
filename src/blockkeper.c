@@ -212,6 +212,7 @@ struct dentry *bkeeper_mount(struct file_system_type *fs_type, int flags, const 
         return ERR_PTR(-EEXIST);    
     }
     session.mounted = 1;
+    printk("%s: wbsynch: %d\n",MOD_NAME, session.wb_sync);
 
     ret = mount_bdev(fs_type, flags, dev_name, data, bkeeper_fill_super);
     if (unlikely(IS_ERR(ret))){

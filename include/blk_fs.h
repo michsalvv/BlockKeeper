@@ -25,7 +25,8 @@ struct fs_metadata{
 
 typedef struct {
 	unsigned int id;
-	size_t data_len;	// Usefull have this also in RCU 
+	// Usefull have this also in RCU 
+	size_t data_len;
 	uint64_t dev_order;
 	struct list_head node;
 }rcu_item;
