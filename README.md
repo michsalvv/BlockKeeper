@@ -22,7 +22,7 @@ To install the Blockkeeper module, follow these steps:
 
 1. Ensure that you have the necessary kernel headers installed for your current kernel version (tested with kernel headers version **6.2.0-25-generic**).
 2. Clone this repository to your local machine and change into the cloned directory.
-3. Install the Sytem-Call Table discovery module
+3. Install the [Sytem-Call Table discovery module](https://github.com/FrancescoQuaglia/Linux-sys_call_table-discoverer)
 
 ```bash
 cd SYS_CALL_TABLE_DISCOVER
@@ -77,7 +77,7 @@ The device driver supports the file system `read()` operation which returns to t
 Example:
 ![cat-pic](.img/cat.png)
 
-#### User CLI
+### User CLI
 The primary utility for interacting with the blockkeeper module is the blockkeeper_cli command-line tool. To use it, run the following command:
 
 ```bash
@@ -86,7 +86,7 @@ The primary utility for interacting with the blockkeeper module is the blockkeep
 This will start the interactive shell for the blockkeeper command-line interface. From there, you can use various commands to manage blocks within the block-based file system.
 ![usercli_pic](.img/user_cli.png)
 
-#### Test
+### Test Unit
 To run the test suite for the blockkeeper module, execute the following command:
 ![tests_pic](.img/tests.png)
 The tests validate the functionality of the operations that the module offers, in particular writes, reads and invalidations are performed by three different threads in order to highlight the correct implementation of the operations in concurrency scenarios.
