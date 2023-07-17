@@ -22,3 +22,5 @@ Module.symvers
 
 # Build directories
 /out/
+*_cli
+*_tests
