@@ -27,9 +27,14 @@ install:
 	sudo insmod blockkeper.ko the_syscall_table=$(SYSCALL_TBL_ADDR) && \
 	sudo mount -o loop -t $(FS_NAME) image $(PWD)/mount
 
-uninstall:
-	sudo umount $(PWD)/mount && \
+uninstall: dev-umount
 	sudo rmmod blockkeper.ko
+
+dev-mount:
+	sudo mount -o loop -t $(FS_NAME) image $(PWD)/mount
+
+dev-umount:
+	sudo umount $(PWD)/mount
 
 build:
 	KCPPFLAGS=$(KCPPFLAGS) make -C /lib/modules/$(shell uname -r)/build M=$(PWD) modules 
@@ -38,7 +43,10 @@ clean:
 	make -C /lib/modules/$(shell uname -r)/build M=$(PWD) clean
 
 user:
-	gcc user/test.c -o out/test
+	gcc user/blockkeeper_cli.c user/error_handler.c -o blockkeeper_cli
+
+test:
+	gcc user/blockkeeper_tests.c user/error_handler.c -DNUM_BLOCKS=$(N_BLOCKS) -o blockkeeper_tests
 
 make-fs:
 	rm image 2>/dev/null
