@@ -11,8 +11,8 @@ typedef struct{
 	uint64_t last_put_order;
 }session_info;
 
-extern struct super_block *superblock;  		// Global device superblock
-extern session_info session;					// Global session informations reference
+extern struct super_block *superblock;  					// Global device superblock
+extern session_info session;								// Global session informations reference
 
 typedef struct InvalidBlockSet {
     uint8_t blocks[NUM_BLOCKS / BITS_PER_BYTE];	
@@ -25,8 +25,7 @@ struct fs_metadata{
 
 typedef struct {
 	unsigned int id;
-	// Usefull have this also in RCU 
-	size_t data_len;
+	size_t data_len;										// Usefull have this also in RCU 
 	uint64_t dev_order;
 	struct list_head node;
 }rcu_item;

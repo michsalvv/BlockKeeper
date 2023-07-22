@@ -11,6 +11,10 @@
 
 #include "common.h"
 
+/**********************************************************
+ * User level software to format the device
+ **********************************************************/
+
 
 int generate_delivery_order(int);
 char body [50];
@@ -36,11 +40,8 @@ int main(int argc, char *argv[])
 	struct fs_inode file_inode;
 	struct fs_dir_record dir;
 	
-	// char *file_body = "Testo del blocco ";//this is the default content of the unique file 
-	// char body [50];
-
 	if (argc != 2) {
-		printf("Usage: mkfs-singlefilefs <device>\n");
+		printf("Usage: makefs <device>\n");
 		return -1;
 	}
 
@@ -65,9 +66,6 @@ int main(int argc, char *argv[])
 
 	dprint("Super block written succesfully\n");
 
-	/**
-	 * sb_bread di default legge blocchi da 4K, quindi se vogliamo leggere il primo blocco di dati ad esempio dobbiamo aggiungere del padding al sb
-	*/
 	put_padding(sizeof(sb), SB_BLOCK_NUMBER);
 
 	// write file inode
@@ -103,8 +101,8 @@ int main(int argc, char *argv[])
 
 
 	/**
-	 * Initialization of  blocks's metadata
-	 * La size del file è già stabilita a tempo di compilazione possiamo quindi già quindi assegnare un ID e il bit INVALID ad ogni blocco
+	 * Initialization of blocks's metadata
+	 * File size is already defined at compile-time, so we can assign an ID and INVALID bit at each block of the device
 	 * 
 	 * Iterate from 2 because superblok and inode are the first blocks
 	*/
@@ -189,6 +187,7 @@ void write_datablock(int fd, int block_number) {
     blk_metadata md;
 	int ret; 
 
+	// Default text of valid blocks
 	sprintf(body, "Text of block #%d with delivery order %d.\n", block_number, delivery_order[block_number]);
 
 

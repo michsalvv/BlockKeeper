@@ -19,7 +19,6 @@
 //sizeof(metadata) = 11
 #define MAX_MSG_SIZE 4096 - 11
 
-// #define derror(...) (printf("%s%s%s", RED, ## __VA_ARGS__, RESET))
 #define derror(...) do { \
     printf("%s", RED); \
     printf(__VA_ARGS__); \

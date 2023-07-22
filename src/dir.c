@@ -10,6 +10,11 @@
 
 #include "blk_fs.h"
 
+/**********************************************************
+ * Dir operation
+ **********************************************************/
+
+
 //this iterate function just returns 3 entries: . and .. and then the name of the unique file of the file system
 static int fs_iterate(struct file *file, struct dir_context* ctx) {
 

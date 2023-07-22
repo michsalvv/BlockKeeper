@@ -6,6 +6,10 @@
 
 #include "blk_fs.h"
 
+/**********************************************************
+ * Standard File Operations
+ **********************************************************/
+
 
 struct dentry *fs_lookup(struct inode *parent_inode, struct dentry *child_dentry, unsigned int flags){
 
@@ -34,16 +38,15 @@ struct dentry *fs_lookup(struct inode *parent_inode, struct dentry *child_dentry
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 12, 0)
         inode_init_owner(sb->s_user_ns, unique_file_inode, NULL, S_IFREG); //set the root user as owned of the FS root
 #else
-        inode_init_owner(the_inode, NULL, S_IFREG); //set the root user as owned of the FS root
+        inode_init_owner(the_inode, NULL, S_IFREG); 
 #endif
         unique_file_inode->i_mode = S_IFREG | S_IRUSR | S_IRGRP | S_IROTH | S_IWUSR | S_IWGRP | S_IXUSR | S_IXGRP | S_IXOTH;
         unique_file_inode->i_fop = &fs_file_ops;
         unique_file_inode->i_op = &fs_inode_ops;
 
-        //just one link for this file
         set_nlink(unique_file_inode,1); //directly set an inode's link count
 
-        //now we retrieve the file size via the FS specific inode, putting it into the generic inode
+        // retrieve the file size via the FS specific inode, putting it into the generic inode
         bh = (struct buffer_head *)sb_bread(sb, FS_UNIQFILE_INODE_NUMBER);
         if(!bh){
             return ERR_PTR(-EIO);
@@ -53,10 +56,6 @@ struct dentry *fs_lookup(struct inode *parent_inode, struct dentry *child_dentry
         unique_file_inode->i_size = FS_specific_inode->file_size;
         brelse(bh);
 
-        /**
-         * This adds the entry to the hash queues and initializes inode
-         * 2nd param inode: The inode to attach to this dentry
-        */
         d_add(child_dentry, unique_file_inode);
 
         /**
@@ -69,7 +68,7 @@ struct dentry *fs_lookup(struct inode *parent_inode, struct dentry *child_dentry
 
         /**
          * Called when the inode is fully initialised to clear the new state (I_NEW) of the inode 
-         * and wake up anyone waiting for the inode to finish initialisation.
+         * and wake up anyone waiting for the inode to finish initialization.
          * 
          * unlock the inode to make it usable
         */

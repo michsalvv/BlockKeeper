@@ -11,12 +11,14 @@ unsigned long new_syscall_array[] = {0x0, 0x0, 0x0};
 #define HACKED_ENTRIES (int)(sizeof(new_syscall_array)/sizeof(unsigned long))
 int restore[HACKED_ENTRIES] = {[0 ... (HACKED_ENTRIES-1)]-1};
 
-
+/**********************************************************
+ * System Call Implementation
+ **********************************************************/
 
 /**
  * int invalidate_data(int offset)
  * Used to invalidate data in a block at a given offset; 
- * invalidation means that data should logically disappear from the device; 
+ * Invalidation means that data should logically disappear from the device; 
  * this service should return the ENODATA error if no data is currently valid and associated with the offset parameter.
 */
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(4,17,0)
@@ -84,7 +86,7 @@ asmlinkage int sys_invalidate_data(int offset)
     
     // Wait for grace period ends
     synchronize_rcu();
-    // Free reference
+    // Free reference of target RCU item
     kfree(curr);
     brelse(bh);
 
@@ -139,6 +141,7 @@ asmlinkage int sys_put_data(char *source, size_t size)
     // User message
     ret = copy_from_user(temp_buf, source, size);
 
+    // Double check on consistency of message length and input size value
     if (strlen(temp_buf) != size || ret < 0){
         kfree(temp_buf);
         return -EIO;
@@ -152,14 +155,8 @@ asmlinkage int sys_put_data(char *source, size_t size)
 
 
     /**
-     * Prendo il lock e trovo il blocco disponibile. 
-     * Bisogna farlo in Critical Section altrimenti potrei scegliere lo stesso blocco di un altro chiamante e sovrascriverlo (o essere sovrascritto).
-     * Possiamo markarlo direttamente ora come invalido poichè finche non verrà aggiunto alla RCU List, i reader non saranno a conoscenza che tale blocco 
-     * è diventato valido
-     * Non possiamo ottimizzare ulteriormente la dimensione della CS poichè questo è l'unico modo per mantere la RCU in ordine.
-     * Se infatti spezzassimo la CS in due unità, nella prima viene individuato il free_block, mentre nella seconda viene soltanto aggiunto l'elemento RCU: in questo
-     * scenario, se un thread B (spawnato dopo A) arriva prima di A ad aggiungere l'elemento alla lista RCU, pur avendo un numero d'ordine maggiore del blocco di A, 
-     * verrebbe aggiunto prima nella lista RCU, non mantenendo dunque l'ordine di arrivo. Questo perchè l'RCU è stata implementata in questo modo. 
+     * Acquire the write lock and we identify the first available block.
+     * It is not possible to optimize the size of the CS: for further details refer to the documentation.
      */
     mutex_lock(&session.mutex_w);
     for (free_block = 0; free_block < NUM_BLOCKS; free_block++){
@@ -188,22 +185,20 @@ asmlinkage int sys_put_data(char *source, size_t size)
     ((blk_metadata*)(bh->b_data))->order = session.last_put_order++;
     rcu_i->id = free_block;
     rcu_i->data_len = strlen(temp_buf);
-    rcu_i->dev_order = session.last_put_order;      // Mantenerlo in sessione è più veloce rispetto a dover scorrere nuovamente la lista fino a raggiungere la tail
+    
+    rcu_i->dev_order = session.last_put_order;      // // Keeping this metadata in session is faster than retrieving it from the RCU tail
     
     // Write on device
     memcpy(bh->b_data + sizeof(blk_metadata), temp_buf, strlen(temp_buf));
+    mark_buffer_dirty(bh);
 
     // Last step: add to RCU list. Now the new data are visible by others
     list_add_tail_rcu(&rcu_i->node, &metadata->rcu_list);
 
     mutex_unlock(&session.mutex_w);
 
-    mark_buffer_dirty(bh);
     if (session.wb_sync)
         sync_dirty_buffer(bh);
-
-    // Wait for grace period ends
-    synchronize_rcu();
 
     kfree(temp_buf);
     return free_block;
@@ -288,6 +283,10 @@ asmlinkage int sys_get_data(int offset, char* destination, size_t size)
 
 }
 
+/**********************************************************
+ * Hacked System Call Installation
+ **********************************************************/
+
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(4,17,0)
 long sys_put_data = (unsigned long) __x64_sys_put_data;       
 long sys_get_data = (unsigned long) __x64_sys_get_data;
@@ -335,17 +334,18 @@ int uninstall_syscalls(void *the_syscall_table){
     return 0;
 }
 
-/**
- * File Operations
-*/
+/**********************************************************
+ * File Operations Implementation
+ **********************************************************/
+
 
 /**
- *  This operation is not synchronized, *off can be changed concurrently.
- *  Add synchronization if you need it for any reason
+ * VFS Read implementation: 
+ * All valid blocks are read in delivery order (RCU Order), but always within the limits of the length requested by the reader.
  * 
- * All'invocazione della read, vengono letti tutti i blocchi validi in ordine di timestamp (RCU Order), ma sempre nei limiti della len richiesta dal lettore.
- * In questo modo anche se avviene un'invalidazione di un blocco durante la lettura, proprio per il meccanismo RCU (synchronize_rcu()), l'elemento della RCU del
- * blocco invalidato non verrà distrutto prima della scadenza del grace period. 
+ * KNOWN ISSUE: When making consecutive calls to the `read()` syscall and reaching the end of the file, 0 bytes will always be read.
+ * To resume reading, it is necessary to open a new file descriptor.
+ * Therefore, it is necessary to handle this event at the application level.
 */
 ssize_t dev_read (struct file * filp, char __user * buf, size_t len, loff_t * off){
     struct buffer_head *bh = NULL;
@@ -367,15 +367,7 @@ ssize_t dev_read (struct file * filp, char __user * buf, size_t len, loff_t * of
         return -ENOMEM;
     }
     
-    /**
-     * Finchè ho spazio nel buffer leggo tutti i possibili blocchi validi. In questo modo allungo il grace period e riduco la gestione dell'invalidazione
-     * dei blocchi in concorrenza.
-     * Tuttavia, se l'operazione del VFS viene invocata tramite read() syscall manuali, è possibile che tra una read e l'altra avvenga una validazione. 
-     * In questo caso quindi è stato ritenuto più consistente andare a consegnare all'utente solamente blocchi la cui intera dimensione entrasse nel buffer.
-     * Mettere esempio:
-     *      Testo del Blocco: 1
-     *      Testo del Blocc
-    */
+    // Keep a reference to the last order number read in the previous invocation (in case the file descriptor hasn't been restored)
     delivered_order = (uint64_t*) filp->private_data;
 
     AUDIT printk(KERN_DEBUG "%s: [READ] Called with (len = %ld, off = %lld) | Last Order %lld\n",MOD_NAME, len, *off, *delivered_order);
@@ -388,7 +380,7 @@ ssize_t dev_read (struct file * filp, char __user * buf, size_t len, loff_t * of
         if (used_len == len){
             break;
         }
-        // Check if the block is in the correct delivery order
+        // Check if the block is in the correct delivery order ( for read() invocation )
         if (rcu_i->dev_order <= *delivered_order){
             continue;
         }
@@ -407,7 +399,7 @@ ssize_t dev_read (struct file * filp, char __user * buf, size_t len, loff_t * of
             return -EIO;
         }
 
-        // Skip metadata blocks
+        // Skip metadata (+ sizeof(blk_metadata))
         strncpy(temp_buf + used_len, bh->b_data + sizeof(blk_metadata), readable_b);
         used_len += readable_b;
         brelse(bh);
@@ -415,20 +407,16 @@ ssize_t dev_read (struct file * filp, char __user * buf, size_t len, loff_t * of
         *delivered_order = rcu_i->dev_order;
     }
 
-    /**
-     * Questo controllo è necessario per permettere il corretto funzionamento del comando `cat`, il quale invoca successive chiamate a `dev_read()`
-     * finchè l'offset non ha raggiunto la fine del file. 
-     * Controlliamo se l'iterazione è tornata a puntare alla testa: In quel caso non ci saranno più blocchi validi da poter leggere.
-     * Di conseguenza, l'output per il comando `cat` è pronto, dobbiamo quindi spostare l'offset fino alla fine del file,
-     * in questo modo non ci sarà una successiva invocazione della dev_read(). 
-     * Possiamo farlo perchè siamo sicuri di aver letto tutti i possibili blocchi validi durante la critical section RCU. 
-     * 
-     * KNOW ISSUE: effettuando invocazione della syscall read() consecutive, al giungimento della fine del file, verranno sempre letti 0 bytes.
-     * Per riniziare la lettura è necessario aprire un nuovo file descriptor. 
-     * E' necessario dunque gestire tale evento a livello applicativo. 
-    */
-
-    // Check if we have reached the end of the file
+/**
+ * Check if we have reached the end of the file (valid blocks only).
+ * 
+ * This check is necessary to ensure the correct functioning of the `cat` command, which makes
+ * successive calls to `dev_read()` until the offset reaches the end of the file.
+ * We check if the iteration has returned to the head of the list: in that case, there are no more valid blocks to read.
+ * Therefore, the output for the `cat` command is ready, and we need to move the offset to the end of the file
+ * to avoid further invocations of `dev_read()`.
+ * We can do this because we are sure that we have read all the possible valid blocks during the RCU critical section.
+ */
     if (&rcu_i->node == rcu_head){
         AUDIT printk(KERN_INFO "%s: [READ] No more block to read\n", MOD_NAME);
         *off = file_size;
@@ -445,13 +433,14 @@ ssize_t dev_read (struct file * filp, char __user * buf, size_t len, loff_t * of
     ret = copy_to_user(buf,temp_buf, used_len);
     kfree(temp_buf);
 
-    // Return the number of bytes read
+    // Return the number of bytes totally read
     return used_len;
 }
 
 
 int dev_open (struct inode * inode, struct file * filp){
     uint64_t *delivered_order;
+    delivered_order = (uint64_t *)kzalloc(sizeof(uint64_t), GFP_KERNEL);
 
     // Check for permission
     if (filp->f_mode & FMODE_WRITE) {
@@ -459,10 +448,8 @@ int dev_open (struct inode * inode, struct file * filp){
       goto fail;
     }
 
-    delivered_order = (uint64_t *)kzalloc(sizeof(uint64_t), GFP_KERNEL);
     filp->private_data = delivered_order;
 
-    // AUDIT printk(KERN_INFO "%s: [OPEN] open operation called\n", MOD_NAME);
     return 0;
 
 fail:
@@ -472,7 +459,6 @@ fail:
 
 int dev_release (struct inode * inode, struct file *filp){
     kfree(filp->private_data);
-    // AUDIT printk(KERN_INFO "%s: [RELEASE] release operation called\n", MOD_NAME);
     return 0;
 }
 

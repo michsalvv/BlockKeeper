@@ -2,6 +2,10 @@
 #include <linux/rculist.h>
 #include <linux/slab.h>
 
+/**********************************************************
+ * InvalidBlockSet API and RCU sort function
+ **********************************************************/
+
 void markInvalid(InvalidBlockSet* set, int blockId) {
     set->blocks[blockId / BITS_PER_BYTE] |= (1 << (blockId % BITS_PER_BYTE));
 }

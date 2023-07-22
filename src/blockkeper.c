@@ -13,6 +13,11 @@ MODULE_LICENSE("GPL");
 MODULE_AUTHOR("Michele Salvatori");
 MODULE_DESCRIPTION("BlockKeeper: Block-Level Data Management Service");
 
+/**********************************************************
+ * Module/Driver/FS setup and installation
+ **********************************************************/
+
+
 unsigned long the_syscall_table = 0x0;
 module_param(the_syscall_table, ulong, 0660);
 
@@ -30,7 +35,6 @@ session_info session = {
 static struct super_operations fs_super_ops = {};
 static struct dentry_operations fs_dentry_ops = {};
 
-//TODO Liberare risorse se occorre un errore?
 int bkeeper_fill_super(struct super_block *sb, void *data, int silent) {   
 
     struct inode *root_inode;
@@ -71,7 +75,7 @@ int bkeeper_fill_super(struct super_block *sb, void *data, int silent) {
         return -EIO;
     } 
 
-    /* Manteniamo nelle info del superblocco un riferimento alla RCU list e l'array di free nodes  */
+    // Keep in the info of the superblock a reference to the RCU list and the InvalidBlockSet (status array of free nodes)
     fs_md = (struct fs_metadata*) kzalloc(sizeof(struct fs_metadata), GFP_KERNEL);
     sb->s_fs_info = (void*) fs_md; 
     sb->s_op = &fs_super_ops;
@@ -87,7 +91,7 @@ int bkeeper_fill_super(struct super_block *sb, void *data, int silent) {
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 12, 0)
     inode_init_owner(sb->s_user_ns, root_inode, NULL, S_IFDIR); 
 #else
-    inode_init_owner(root_inode, NULL, S_IFDIR); //set the root user as owned of the FS root
+    inode_init_owner(root_inode, NULL, S_IFDIR); 
 #endif
     root_inode->i_sb = sb;
 
@@ -101,7 +105,6 @@ int bkeeper_fill_super(struct super_block *sb, void *data, int silent) {
     ktime_get_real_ts64(&curr_time);
     root_inode->i_atime = root_inode->i_mtime = root_inode->i_ctime = curr_time;
 
-    // no inode from device is needed - the root of our file system is an in memory object
     root_inode->i_private = NULL;
 
     sb->s_root = d_make_root(root_inode);
@@ -123,27 +126,28 @@ int bkeeper_fill_super(struct super_block *sb, void *data, int silent) {
     /* Reference to global superblock */
     superblock = sb; 
 
-
+    // Check over the actual number of blocks that has been allocated and the number of blocks that the driver can handle 
     init_blks = unique_inode->file_size / DEFAULT_BLOCK_SIZE;
 
-    /* Check over the actual number of blocks that has been allocated and the number of blocks that the driver can handle */
     if (init_blks > NUM_BLOCKS ){
         printk("%s: [FAILED] Device has [%ld] blocks. The driver can handle max [%d] blocks\n", MOD_NAME, init_blks, NUM_BLOCKS);
         return -EINVAL;
     }
 
 
-    /* Initialize block state array and RCU list for valid blocks */
+    // Initialize block state array and a temp RCU list (not sorted) for valid blocks 
     initializeInvalidBlockSet(&fs_md->invalid_blocks);
-    /* Initialize a temp rcu list, not sorted */
     INIT_LIST_HEAD_RCU(&temp_rcu_list);
 
-    /* Initialize writers mutexes */ 
+    // Initialize writers mutexes
     mutex_init(&session.mutex_w);
 
-    // Iteriamo da due perchè non teniamo nella RCU il superblocco e l'inode
-    for (ii=0; ii<init_blks-2; ii++){
-        // Leggi i metadati dei blocchi e se è valido lo metti nella RCU
+    for (ii=0; ii<init_blks-2; ii++){ // Iterate from 2: skip superblock and inode
+        
+        /**
+         *  Read block metadata from device: if valid add it in RCU list
+         */
+
         bh = sb_bread(sb, ii+2);
         if (!bh){
             return -EINVAL;
@@ -212,7 +216,6 @@ struct dentry *bkeeper_mount(struct file_system_type *fs_type, int flags, const 
         return ERR_PTR(-EEXIST);    
     }
     session.mounted = 1;
-    printk("%s: wbsynch: %d\n",MOD_NAME, session.wb_sync);
 
     ret = mount_bdev(fs_type, flags, dev_name, data, bkeeper_fill_super);
     if (unlikely(IS_ERR(ret))){

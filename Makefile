@@ -50,7 +50,7 @@ test:
 	gcc user/blockkeeper_tests.c user/error_handler.c -DNUM_BLOCKS=$(NBLOCKS) -o blockkeeper_tests
 
 make-fs:
-	rm image 2>/dev/null
+	rm -f image
 	dd bs=4096 count=$(NBLOCKS) if=/dev/zero of=image
 	gcc $(EXTRA_CFLAGS) src/makefs.c -o out/makefs && \
 	./out/makefs image

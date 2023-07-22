@@ -34,14 +34,6 @@
 #define INVALID_BIT 1
 #define VALID_BIT 0
 
-/**
- * Definition of necessary structures both for the kernel module and for the formatting of the device
- * - Inode definition
- * - Superblock definition
- * - Dir de// Usefull have this also in RCU finition
- * - Block Metadata definition
-*/
-
 struct fs_inode {
 	mode_t mode;
 	uint64_t inode_no;
