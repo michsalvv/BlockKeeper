@@ -164,7 +164,7 @@ int generate_delivery_order(int blocks_num){
 
 	while (count < blocks_num) {
 		int r = rand();
-		int random_num = r % (blocks_num);
+		int random_num = (r % (blocks_num)) +1;
 
 		int is_extracted = 0;
         for (int i = 0; i < count; i++) {

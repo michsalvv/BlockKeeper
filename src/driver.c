@@ -352,15 +352,18 @@ ssize_t dev_read (struct file * filp, char __user * buf, size_t len, loff_t * of
     struct inode * the_inode = filp->f_inode;
 
     loff_t file_size = the_inode->i_size ;
-
+    loff_t block_offset;
     uint64_t *delivered_order;
-    ssize_t ret, used_len = 0;
+    ssize_t ret, readed_bytes = 0;
     char *temp_buf;
     
     struct super_block *sb = filp->f_path.dentry->d_inode->i_sb;
     struct list_head *rcu_head = &(((struct fs_metadata *) sb->s_fs_info)->rcu_list);
-    rcu_item *rcu_i;
- 
+    rcu_item *rcu_i, *next;
+    
+    // Reached end of file
+    if (*off >= file_size)
+        return 0;
 
     temp_buf = (char*) kzalloc(len, GFP_KERNEL);
     if (!temp_buf){
@@ -370,28 +373,55 @@ ssize_t dev_read (struct file * filp, char __user * buf, size_t len, loff_t * of
     // Keep a reference to the last order number read in the previous invocation (in case the file descriptor hasn't been restored)
     delivered_order = (uint64_t*) filp->private_data;
 
-    AUDIT printk(KERN_DEBUG "%s: [READ] Called with (len = %ld, off = %lld) | Last Order %lld\n",MOD_NAME, len, *off, *delivered_order);
+    AUDIT printk(KERN_DEBUG "%s: [READ] len = %ld, off = %lld , delivery_order %lld\n",MOD_NAME, len, *off, *delivered_order);
 
     rcu_read_lock();
 
     list_for_each_entry_rcu(rcu_i, rcu_head, node){
-        int readable_b;
+        int readable_bytes = 0;
 
-        if (used_len == len){
+        if (len <= 0)
             break;
-        }
-        // Check if the block is in the correct delivery order ( for read() invocation )
-        if (rcu_i->dev_order <= *delivered_order){
+
+        // Check if the block is in the correct delivery order
+        if (rcu_i->dev_order < *delivered_order){
+            AUDIT printk(KERN_INFO "%s: [READ] Block skipped, already readed.\n", MOD_NAME);
             continue;
         }
 
-        // Check if there is enough space in the buffer
-        if (rcu_i->data_len > (len-used_len)){
-            AUDIT printk(KERN_INFO "%s: [READ] No space in buffer for block #%d of %ld bytes. Space left: %ld bytes \n", MOD_NAME, rcu_i->id, rcu_i->data_len, (len -used_len));
-            break;
+        if ((*delivered_order != 0) && (rcu_i->dev_order != *delivered_order)){
+            rcu_read_unlock();
+            return -ESPIPE;
         }
-        readable_b = rcu_i->data_len;
-        
+
+        block_offset = *off;
+
+        // The block can be readed completely
+        if ((rcu_i->data_len - block_offset) <= len){
+            readable_bytes = (rcu_i->data_len - block_offset);
+            AUDIT printk(KERN_INFO "%s: [READ] Block can be readed completely [%d bytes]\n", MOD_NAME, readable_bytes);
+
+            *off = 0;
+            next = (rcu_item*) list_next_or_null_rcu(rcu_head, &(rcu_i->node), rcu_item, node);
+
+            if (next != NULL)
+                *delivered_order = next->dev_order;
+            else *delivered_order = (*delivered_order)+1;
+        }
+        // The block can be readed partially
+        else{
+            readable_bytes = len;
+            AUDIT printk(KERN_INFO "%s: [READ] Block can be readed partially [%d bytes]\n", MOD_NAME, readable_bytes);
+            *off += readable_bytes;
+
+            // We still have to read this block
+            *delivered_order = rcu_i->dev_order;          
+        }
+
+        len -= readable_bytes;
+
+
+
         // Read current block
         bh = (struct buffer_head *)sb_bread(filp->f_path.dentry->d_inode->i_sb, rcu_i->id + 2);
         if(!bh){
@@ -400,11 +430,11 @@ ssize_t dev_read (struct file * filp, char __user * buf, size_t len, loff_t * of
         }
 
         // Skip metadata (+ sizeof(blk_metadata))
-        strncpy(temp_buf + used_len, bh->b_data + sizeof(blk_metadata), readable_b);
-        used_len += readable_b;
+        strncpy(temp_buf + readed_bytes, bh->b_data + sizeof(blk_metadata) + block_offset, readable_bytes);
         brelse(bh);
-        
-        *delivered_order = rcu_i->dev_order;
+
+        readed_bytes += readable_bytes;
+
     }
 
 /**
@@ -423,25 +453,27 @@ ssize_t dev_read (struct file * filp, char __user * buf, size_t len, loff_t * of
     }
     rcu_read_unlock();            
 
-    if (used_len == 0){
+    if (readed_bytes == 0){
         kfree(temp_buf);
-        return 0;
+        return readed_bytes;
     }
 
 
     // Copy the data to the user space buffer
-    ret = copy_to_user(buf,temp_buf, used_len);
+    ret = copy_to_user(buf,temp_buf, readed_bytes);
     kfree(temp_buf);
 
     // Return the number of bytes totally read
-    return used_len;
+    return readed_bytes;
 }
 
 
 int dev_open (struct inode * inode, struct file * filp){
     uint64_t *delivered_order;
     delivered_order = (uint64_t *)kzalloc(sizeof(uint64_t), GFP_KERNEL);
+    *delivered_order = 0;
 
+      printk(KERN_INFO "%s: [OPEN]\n", MOD_NAME);
     // Check for permission
     if (filp->f_mode & FMODE_WRITE) {
       printk(KERN_ERR "%s: [OPEN] Cannot open file for write mode\n", MOD_NAME);
@@ -458,6 +490,8 @@ fail:
 }
 
 int dev_release (struct inode * inode, struct file *filp){
+    printk(KERN_INFO "%s: [RELEASE]\n", MOD_NAME);
+
     kfree(filp->private_data);
     return 0;
 }

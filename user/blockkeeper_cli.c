@@ -91,6 +91,9 @@ void vfs_read(){
         if (ret >=0){
             printf("Readed [%s%d%s] bytes:\n\n",GREEN, ret, RESET);
             if (ret >0 ) printf("%.*s\n", ret, buffer);
+        }else if(errno == ESPIPE){
+            printf("%sThe block you were reading has been invalidated. Reset the file descriptor%s\n", RED, RESET);
+            break;
         }
 
     } while (1);
@@ -102,6 +105,8 @@ void vfs_read(){
 
 int main() {
     int choice;
+//    vfs_read();
+//    return 0;
 
     do {
         printf(CLEAR_SCREEN);
