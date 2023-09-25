@@ -361,10 +361,6 @@ ssize_t dev_read (struct file * filp, char __user * buf, size_t len, loff_t * of
     struct list_head *rcu_head = &(((struct fs_metadata *) sb->s_fs_info)->rcu_list);
     rcu_item *rcu_i, *next;
     
-    // Reached end of file
-    if (*off >= file_size)
-        return 0;
-
     temp_buf = (char*) kzalloc(len, GFP_KERNEL);
     if (!temp_buf){
         return -ENOMEM;
@@ -446,11 +442,13 @@ ssize_t dev_read (struct file * filp, char __user * buf, size_t len, loff_t * of
  * Therefore, the output for the `cat` command is ready, and we need to move the offset to the end of the file
  * to avoid further invocations of `dev_read()`.
  * We can do this because we are sure that we have read all the possible valid blocks during the RCU critical section.
+ * 
+ * NOTE: No longer necessary in this release.
  */
-    if (&rcu_i->node == rcu_head){
-        AUDIT printk(KERN_INFO "%s: [READ] No more block to read\n", MOD_NAME);
-        *off = file_size;
-    }
+    // if (&rcu_i->node == rcu_head){
+    //     AUDIT printk(KERN_INFO "%s: [READ] No more block to read\n", MOD_NAME);
+    //     *off = file_size;
+    // }
     rcu_read_unlock();            
 
     if (readed_bytes == 0){
